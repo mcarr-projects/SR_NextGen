@@ -1,0 +1,21 @@
+# Git ignore rules 
+# === Environment files ===
+.env
+.env.*       # in case you have .env.local or .env.dev
+
+# === Python cache and build artifacts ===
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+
+# === SQLite databases ===
+*.db
+*.sqlite3
+
+# === Backup files ===
+*.bak
+*.tmp
+*.swp
