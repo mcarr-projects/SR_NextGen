@@ -105,6 +105,9 @@ def get_cards(tags=""):
                 FROM cards
                 ORDER BY id ASC
             """)
+        
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]
 
     except Exception as e:
         print("Error retrieving cards:", e)
