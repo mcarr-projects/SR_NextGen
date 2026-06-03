@@ -1,4 +1,8 @@
-# Git ignore rules 
+# Git ignore rules
+
+# Other
+Research/
+
 # === Environment files ===
 .env
 .env.*       # in case you have .env.local or .env.dev

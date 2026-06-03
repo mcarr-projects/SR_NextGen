@@ -68,6 +68,21 @@ def init_db():
         FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS review_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        card_id INTEGER NOT NULL,
+        reviewed_at TEXT NOT NULL,
+        grading_mode TEXT NOT NULL
+            CHECK (grading_mode IN ('manual', 'ai')),
+        score INTEGER NOT NULL
+            CHECK (score IN (1, 2, 3, 4, 5)),
+        user_answer TEXT,
+        ai_feedback TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
+    );
+    """)
 
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_card_tags_tag_id
@@ -77,6 +92,10 @@ def init_db():
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_user_card_state_user_next_review
     ON user_card_state(user_id, next_review_time);
+    """)
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed
+    ON review_history(user_id, card_id, reviewed_at);
     """)
 
     conn.commit()
@@ -247,6 +266,73 @@ def row_to_card_dict(row):
     card["tags"] = [tag for tag in tags.split(",") if tag] if tags else []
     return card
 
+def get_all_tags():
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            SELECT name
+            FROM tags
+            ORDER BY name COLLATE NOCASE ASC
+        """)
+        return [row["name"] for row in cur.fetchall()]
+
+    except Exception as e:
+        print("Error retrieving tags:", e)
+        return []
+
+    finally:
+        conn.close()
+
+def add_review_history(
+    card_id,
+    score,
+    grading_mode,
+    user_id=DEFAULT_USER_ID,
+    user_answer=None,
+    ai_feedback=None,
+    reviewed_at=None
+):
+    assert score in (1, 2, 3, 4, 5), "score must be one of: 1, 2, 3, 4, 5"
+    assert grading_mode in ("manual", "ai"), "grading_mode must be either 'manual' or 'ai'"
+
+    reviewed_at = reviewed_at or utc_now_iso()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            INSERT INTO review_history (
+                user_id,
+                card_id,
+                reviewed_at,
+                grading_mode,
+                score,
+                user_answer,
+                ai_feedback
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            user_id,
+            card_id,
+            reviewed_at,
+            grading_mode,
+            score,
+            user_answer,
+            ai_feedback
+        ))
+
+        conn.commit()
+        return {"success": True, "review_id": cur.lastrowid}
+
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
     init_db()

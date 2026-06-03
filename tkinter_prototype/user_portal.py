@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
-from db_lib import add_card, get_cards
+from db_lib import add_card, get_cards, get_all_tags
 
 def insert_question(question, answer, tags):
     question = question.strip()
@@ -66,85 +66,195 @@ def add_card_launch():
     return 
 
 def launch_review_menu():
-    add_window = tk.Toplevel(root)
-    add_window.title("Review Menu")
+    config_window = tk.Toplevel(root)
+    config_window.title("Review Config")
+    config_window.geometry("400x400")
 
-    review_all_btn = tk.Button(
-        add_window,
-        text="Review All",
-        command=lambda: card_review(["ALL"])
+    # grading section
+    grading_frame = tk.LabelFrame(config_window, text="Grading", padx=10, pady=10)
+    grading_frame.pack(fill="x", padx=10, pady=10)
+
+    grading_mode = tk.StringVar(value="Manual")
+
+    manual_radio = tk.Radiobutton(
+        grading_frame,
+        text="Manual",
+        variable=grading_mode,
+        value="Manual"
     )
-    review_all_btn.pack(padx=10, pady=10)
+    manual_radio.pack(anchor="w")
 
-def card_review(tags):
-    add_window = tk.Toplevel(root)
-    add_window.title("Review Questions")
-    add_window.geometry("1200x600")
+    ai_radio = tk.Radiobutton(
+        grading_frame,
+        text="AI",
+        variable=grading_mode,
+        value="AI"
+    )
+    ai_radio.pack(anchor="w")
 
-    qna_frame = tk.Frame(add_window)
-    qna_frame.pack(side="top")
+    # number of cards section
+    count_frame = tk.LabelFrame(config_window, text="Number of cards", padx=10, pady=10)
+    count_frame.pack(fill="x", padx=10, pady=10)
+
+    card_count_input = tk.Entry(count_frame, width=20)
+    card_count_input.pack(anchor="w")
+
+    # subjects section
+    subjects_frame = tk.LabelFrame(config_window, text="Tags", padx=10, pady=10)
+    subjects_frame.pack(fill="x", padx=10, pady=10)
+
+    available_tags = ["ALL"] + get_all_tags()
+
+    selected_tag = tk.StringVar(value="ALL")
+
+    tag_menu = tk.OptionMenu(subjects_frame, selected_tag, *available_tags)
+    tag_menu.pack(anchor="w")
+
+    def start_review():
+        card_count_text = card_count_input.get().strip()
+
+        try:
+            card_count = int(card_count_text)
+        except ValueError:
+            messagebox.showerror("Invalid number", "Number of cards must be a positive integer.")
+            return
+
+        if card_count <= 0:
+            messagebox.showerror("Invalid number", "Number of cards must be a positive integer.")
+            return
+
+        mode = grading_mode.get()
+
+        # Still unused for now, but available later:
+        # card_count
+        # subjects_input.get()
+
+        
+
+        selected = selected_tag.get()
+        if selected == "ALL":
+            review_tags = ["ALL"]
+        else:
+            review_tags = [selected]
+        if mode == "Manual":
+            config_window.destroy()
+            manual_card_review(review_tags)
+            
+        else:
+            messagebox.showinfo("AI grading", "AI grading is not implemented yet.")
+
+    start_btn = tk.Button(config_window, text="Start Review", command=start_review)
+    start_btn.pack(pady=10)
+
+def manual_card_review(tags):
+    review_window = tk.Toplevel(root)
+    review_window.title("Manual Review")
+    review_window.geometry("1200x700")
+
+    qna_frame = tk.Frame(review_window)
+    qna_frame.pack(side="top", fill="both", expand=True)
 
     q_frame = tk.Frame(qna_frame)
-    q_frame.pack(side="left")
+    q_frame.pack(side="left", fill="both", expand=True)
+
     q_label = tk.Label(q_frame, text="Question")
     q_label.pack(pady=(0, 5))
-    q_input = tk.Text(q_frame, width=70, height=30)
-    q_input.pack(padx=5, pady=3)
+
+    q_input = tk.Text(q_frame, width=70, height=30, wrap="word")
+    q_input.pack(padx=5, pady=3, fill="both", expand=True)
 
     a_frame = tk.Frame(qna_frame)
-    a_frame.pack(side="left")
-    a_label = tk.Label(a_frame, text="Answer")
-    a_label.pack(pady=(0, 5))
-    a_input = tk.Text(a_frame, width=70, height=30)
-    a_input.pack(padx=5, pady=3)
+    a_frame.pack(side="left", fill="both", expand=True)
 
-    bottom_frame = tk.Frame(add_window)
+    a_label = tk.Label(a_frame, text="Your Answer")
+    a_label.pack(pady=(0, 5))
+
+    a_input = tk.Text(a_frame, width=70, height=30, wrap="word")
+    a_input.pack(padx=5, pady=3, fill="both", expand=True)
+
+    bottom_frame = tk.Frame(review_window)
     bottom_frame.pack(side="bottom", pady=10)
 
     to_review = get_cards(tags)
     curr_index = tk.IntVar(value=0)
+    answer_shown = tk.BooleanVar(value=False)
+    selected_grade = tk.IntVar(value=0)
 
     if not to_review:
         messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
-        add_window.destroy()
+        review_window.destroy()
         return
 
-    answer_shown = tk.BooleanVar(value=False)
-
     def show_question():
-        question = to_review[curr_index.get()]["question"]
+        card = to_review[curr_index.get()]
+        selected_grade.set(0)
+        answer_shown.set(False)
 
         q_input.config(state="normal")
         q_input.delete("1.0", "end")
-        q_input.insert("1.0", question)
+        q_input.insert("1.0", card["question"])
         q_input.config(state="disabled")
+
+        a_label.config(text="Your Answer")
 
         a_input.config(state="normal")
         a_input.delete("1.0", "end")
-        answer_shown.set(False)
+
+        show_ans_btn.config(state="normal")
+        submit_grade_btn.config(state="disabled")
+
+        for btn in grade_buttons:
+            btn.config(state="disabled")
 
     def reveal_answer():
         if answer_shown.get():
             return
 
-        answer = to_review[curr_index.get()]["answer"]
-        current_text = a_input.get("1.0", "end").strip()
+        card = to_review[curr_index.get()]
+        user_answer = a_input.get("1.0", "end-1c").strip()
+
+        a_label.config(text="Answer Comparison")
 
         a_input.config(state="normal")
         a_input.delete("1.0", "end")
-        a_input.insert("1.0", f"Your Answer:\n{current_text}\n\n")
-        a_input.insert("end", f"Suggested Answer:\n{answer}\n\n")
-        a_input.insert("end", "Evaluation:\n(Under construction)")
+        a_input.insert("1.0", f"Your Answer:\n{user_answer}\n\n")
+        a_input.insert("end", f"Suggested Answer:\n{card['answer']}\n\n")
+        a_input.insert("end", "Select a grade below.")
 
         a_input.config(state="disabled")
         answer_shown.set(True)
 
-    def next_card():
+        show_ans_btn.config(state="disabled")
+
+        for btn in grade_buttons:
+            btn.config(state="normal")
+
+    def choose_grade(grade):
+        selected_grade.set(grade)
+        submit_grade_btn.config(state="normal")
+
+    def submit_grade_and_next():
+        grade = selected_grade.get()
+
+        if not answer_shown.get():
+            messagebox.showerror("Answer not shown", "Show the answer before grading.")
+            return
+
+        if grade <= 0:
+            messagebox.showerror("Missing grade", "Select a grade before continuing.")
+            return
+
+        # Database recording will go here later.
+        # Current useful values:
+        # card = to_review[curr_index.get()]
+        # grade = selected_grade.get()
+        # user_answer / comparison text can be captured before reveal if needed later.
+
         idx = curr_index.get() + 1
 
         if idx >= len(to_review):
             messagebox.showinfo("Done", "All cards reviewed!")
-            add_window.destroy()
+            review_window.destroy()
             return
 
         curr_index.set(idx)
@@ -153,8 +263,31 @@ def card_review(tags):
     show_ans_btn = tk.Button(bottom_frame, text="Show Answer", command=reveal_answer)
     show_ans_btn.pack(side="left", padx=10)
 
-    next_q_btn = tk.Button(bottom_frame, text="Next", command=next_card)
-    next_q_btn.pack(side="left", padx=10)
+    grade_frame = tk.Frame(bottom_frame)
+    grade_frame.pack(side="left", padx=20)
+
+    tk.Label(grade_frame, text="Grade:").pack(side="left", padx=(0, 5))
+
+    grade_buttons = []
+    for grade in range(1, 6):
+        btn = tk.Radiobutton(
+            grade_frame,
+            text=str(grade),
+            variable=selected_grade,
+            value=grade,
+            command=lambda g=grade: choose_grade(g),
+            state="disabled"
+        )
+        btn.pack(side="left")
+        grade_buttons.append(btn)
+
+    submit_grade_btn = tk.Button(
+        bottom_frame,
+        text="Submit Grade / Next",
+        command=submit_grade_and_next,
+        state="disabled"
+    )
+    submit_grade_btn.pack(side="left", padx=10)
 
     show_question()
 
@@ -233,8 +366,9 @@ frame.pack(expand=True)
 add_card_btn = tk.Button(frame, text="Add Question", command=add_card_launch)
 add_card_btn.pack(side="left", padx=5)
 
-edit_card_btn = tk.Button(frame, text= "Edit Questions", command = edit_card_launch)
-edit_card_btn.pack(side = "left", padx=5)
+#Need to reconcile editing with review history before an edit button actually makes sense
+#edit_card_btn = tk.Button(frame, text= "Edit Questions", command = edit_card_launch)
+#edit_card_btn.pack(side = "left", padx=5)
 
 review_card_btn = tk.Button(frame, text="Review Questions", command=launch_review_menu)
 review_card_btn.pack(side = "left", padx=5)
