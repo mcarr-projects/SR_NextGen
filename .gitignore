@@ -18,6 +18,7 @@ build/
 # === SQLite databases ===
 *.db
 *.sqlite3
+*.db.backup*
 
 # === Backup files ===
 *.bak

@@ -7,7 +7,7 @@ DB_PATH = Path(__file__).parent / "spacedrep.db"
 DEFAULT_USER_ID = 1
 MAX_PERFORMANCE_HISTORY = 100
 VALID_LENGTHS = {"short", "medium", "long"}
-
+VALID_GRADING_TYPES = {"binary", "scaled"}
 
 def utc_now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -30,6 +30,8 @@ def init_db():
         answer TEXT NOT NULL,
         length TEXT NOT NULL DEFAULT 'short'
             CHECK (length IN ('short', 'medium', 'long')),
+        grading_type TEXT
+            CHECK (grading_type IN ('binary', 'scaled')),
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -63,7 +65,7 @@ def init_db():
         repetitions INTEGER NOT NULL DEFAULT 0,
         ef REAL NOT NULL DEFAULT 2.5,
         lapse_count INTEGER NOT NULL DEFAULT 0,
-        performance_history_json TEXT NOT NULL DEFAULT '[]',
+        recent_scores_json TEXT NOT NULL DEFAULT '[]',
         PRIMARY KEY (user_id, card_id),
         FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
     );
@@ -103,6 +105,10 @@ def init_db():
 
 
 def clean_tags(tags):
+
+    def standardize_tag(tag):
+        return " ".join(word.capitalize() for word in tag.strip().split())
+
     if tags is None:
         return []
     if not isinstance(tags, (list, tuple)):
@@ -113,7 +119,7 @@ def clean_tags(tags):
     for tag in tags:
         if not isinstance(tag, str):
             raise TypeError("each tag must be a string")
-        clean_tag = tag.strip()
+        clean_tag = standardize_tag(tag)
         if clean_tag and clean_tag not in seen:
             cleaned.append(clean_tag)
             seen.add(clean_tag)
@@ -121,9 +127,20 @@ def clean_tags(tags):
     return cleaned
 
 
-def add_card(question, answer, tags=None, length="short", user_id=DEFAULT_USER_ID, next_review_time=None):
+def add_card(
+    question,
+    answer,
+    tags=None,
+    length="short",
+    grading_type=None,
+    user_id=DEFAULT_USER_ID,
+    next_review_time=None
+):
     if length not in VALID_LENGTHS:
         raise ValueError("length must be one of: short, medium, long")
+
+    if grading_type not in VALID_GRADING_TYPES:
+        raise ValueError("grading_type must be one of: binary, scaled")
 
     card_tags = clean_tags(tags)
     next_review_time = next_review_time or utc_now_iso()
@@ -133,9 +150,10 @@ def add_card(question, answer, tags=None, length="short", user_id=DEFAULT_USER_I
 
     try:
         cur.execute("""
-        INSERT INTO cards (question, answer, length)
-        VALUES (?, ?, ?)
-        """, (question, answer, length))
+        INSERT INTO cards (question, answer, length, grading_type)
+        VALUES (?, ?, ?, ?)
+        """, (question, answer, length, grading_type))
+
         card_id = cur.lastrowid
 
         for tag in card_tags:
@@ -218,6 +236,7 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
                 c.question,
                 c.answer,
                 c.length,
+                c.grading_type,
                 c.created_at,
                 c.updated_at,
                 ucs.next_review_time,
@@ -255,10 +274,6 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
 def get_due_cards(user_id=DEFAULT_USER_ID, as_of=None, limit=None):
     #TBD
     return
-
-def record_review(card_id, score, user_id=DEFAULT_USER_ID, reviewed_at=None, next_review_time=None):
-    #TBD
-    return 
 
 def row_to_card_dict(row):
     card = dict(row)

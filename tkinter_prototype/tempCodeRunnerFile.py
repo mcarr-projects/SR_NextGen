@@ -2,30 +2,20 @@ import tkinter as tk
 from tkinter import messagebox
 from db_lib import add_card, get_cards, get_all_tags, add_review_history
 
-def insert_question(question, answer, tags, grading_type):
+def insert_question(question, answer, tags):
     question = question.strip()
     answer = answer.strip()
-
     if not question:
         messagebox.showerror("Missing question", "Question cannot be blank.")
         return False
     if not answer:
         messagebox.showerror("Missing answer", "Answer cannot be blank.")
         return False
-    if grading_type not in ("scaled", "binary"):
-        messagebox.showerror("Missing grading type", "Choose a grading type.")
-        return False
 
-    added = add_card(
-        question,
-        answer,
-        tags,
-        grading_type=grading_type
-    )
+    added = add_card(question, answer, tags)
     if added.get("success"):
         print("Card added.")
         return True
-
     print("Error:", added.get("error"))
     messagebox.showerror("Add failed", added.get("error", "Unknown error"))
     return False
@@ -33,80 +23,47 @@ def insert_question(question, answer, tags, grading_type):
 def add_card_launch():
     add_window = tk.Toplevel(root)
     add_window.title("Add Question")
-
-    # question / answer boxes
+        
+    #question label/box
     qna_frame = tk.Frame(add_window)
     qna_frame.pack(side="top")
-
+    
     q_frame = tk.Frame(qna_frame)
     q_frame.pack(side="left")
-
     q_label = tk.Label(q_frame, text="Question")
-    q_label.pack(pady=(0, 5))
-
-    q_input = tk.Text(q_frame, width=50, height=15, wrap="word")
-    q_input.pack(padx=5, pady=3)
-
-    a_frame = tk.Frame(qna_frame)
+    q_label.pack(pady=(0,5))
+    q_input = tk.Text(q_frame, width = 50, height = 15, wrap="word")
+    q_input.pack(padx=5,pady=3)
+    
+    a_frame= tk.Frame(qna_frame)
     a_frame.pack(side="left")
-
-    a_label = tk.Label(a_frame, text="Answer")
-    a_label.pack(pady=(0, 5))
-
-    a_input = tk.Text(a_frame, width=50, height=15, wrap="word")
-    a_input.pack(padx=5, pady=3)
-
-    # tags + grading type row
+    a_label = tk.Label(a_frame,text ="Answer")
+    a_label.pack(pady=(0,5)) 
+    a_input = tk.Text(a_frame, width = 50, height = 15, wrap = "word")
+    a_input.pack(padx=5,pady=3)
+    
+    #tags input and add button    
     bottom_frame = tk.Frame(add_window)
-    bottom_frame.pack(side="bottom", pady=10)
-
-    input_row = tk.Frame(bottom_frame)
-    input_row.pack(side="top", pady=(0, 10))
-
-    tag_label = tk.Label(input_row, text="Tags, comma sep")
-    tag_label.pack(side="left")
-
-    tags_input = tk.Entry(input_row, width=55)
-    tags_input.pack(side="left", padx=(5, 20))
-
-    grading_type = tk.StringVar(value="unselected")
-
-    grading_frame = tk.Frame(input_row)
-    grading_frame.pack(side="left")
-
-    tk.Label(grading_frame, text="Grading:").pack(side="left", padx=(0, 5))
-
-    scaled_radio = tk.Radiobutton(
-        grading_frame,
-        text="Scaled",
-        variable=grading_type,
-        value="scaled"
-    )
-    scaled_radio.pack(side="left")
-
-    binary_radio = tk.Radiobutton(
-        grading_frame,
-        text="Correct / Incorrect",
-        variable=grading_type,
-        value="binary"
-    )
-    binary_radio.pack(side="left")
+    bottom_frame.pack(side="bottom",pady=10)
+    tag_label = tk.Label(bottom_frame, text = "Tags, comma sep")
+    tag_label.pack(side= "left")
+    tags_input = tk.Entry(bottom_frame, width = 70)
+    tags_input.pack(side = "left")
 
     def add_handler():
         q_text = q_input.get("1.0", "end-1c")
         a_text = a_input.get("1.0", "end-1c")
         tag_text = [t.strip() for t in tags_input.get().split(",") if t.strip()]
 
-        if insert_question(q_text, a_text, tag_text, grading_type.get()):
+        if insert_question(q_text, a_text, tag_text):
             q_input.delete("1.0", "end")
             a_input.delete("1.0", "end")
             tags_input.delete(0, "end")
-            grading_type.set("unselected")
 
     add_button = tk.Button(bottom_frame, text="Add Question", command=add_handler)
-    add_button.pack(side="top")
+    add_button.pack(side="left", padx=20)
 
-    return
+    return 
 
 def launch_review_menu():
     config_window = tk.Toplevel(root)
@@ -231,6 +188,7 @@ def manual_card_review(tags):
 
     def show_question():
         card = to_review[curr_index.get()]
+        rebuild_grade_buttons(card)
         selected_grade.set(0)
         answer_shown.set(False)
         saved_user_answer.set("")
@@ -322,20 +280,46 @@ def manual_card_review(tags):
     grade_frame = tk.Frame(bottom_frame)
     grade_frame.pack(side="left", padx=20)
 
-    tk.Label(grade_frame, text="Grade:").pack(side="left", padx=(0, 5))
+    grade_label = tk.Label(grade_frame, text="Grade:")
+    grade_label.pack(side="left", padx=(0, 5))
 
     grade_buttons = []
-    for grade in range(1, 6):
-        btn = tk.Radiobutton(
-            grade_frame,
-            text=str(grade),
-            variable=selected_grade,
-            value=grade,
-            command=lambda g=grade: choose_grade(g),
-            state="disabled"
-        )
-        btn.pack(side="left")
-        grade_buttons.append(btn)
+
+
+    def rebuild_grade_buttons(card):
+        for btn in grade_buttons:
+            btn.destroy()
+
+        grade_buttons.clear()
+        selected_grade.set(0)
+
+        grading_type = card.get("grading_type")
+
+        if grading_type == "binary":
+            options = [
+                ("Incorrect", 1),
+                ("Correct", 5),
+            ]
+        else:
+            options = [
+                ("1", 1),
+                ("2", 2),
+                ("3", 3),
+                ("4", 4),
+                ("5", 5),
+            ]
+
+        for label, grade in options:
+            btn = tk.Radiobutton(
+                grade_frame,
+                text=label,
+                variable=selected_grade,
+                value=grade,
+                command=lambda g=grade: choose_grade(g),
+                state="disabled"
+            )
+            btn.pack(side="left")
+            grade_buttons.append(btn)
 
     submit_grade_btn = tk.Button(
         bottom_frame,
