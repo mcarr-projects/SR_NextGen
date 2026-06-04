@@ -2,6 +2,8 @@
 
 # Other
 Research/
+migration_export.json
+tempCodeRunnerFile.py
 
 # === Environment files ===
 .env
@@ -19,6 +21,7 @@ build/
 *.db
 *.sqlite3
 *.db.backup*
+
 
 # === Backup files ===
 *.bak
