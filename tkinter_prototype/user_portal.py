@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import messagebox
-from db_lib import add_card, get_cards, get_all_tags, add_review_history
+from db_lib import add_card, get_cards, get_all_tags, record_card_review
 
 def insert_question(question, answer, tags, grading_type):
     question = question.strip()
@@ -292,7 +292,7 @@ def manual_card_review(tags):
 
         card = to_review[curr_index.get()]
 
-        result = add_review_history(
+        result = record_card_review(
             card_id=card["id"],
             score=grade,
             grading_mode="manual",

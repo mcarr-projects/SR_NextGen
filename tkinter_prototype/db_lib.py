@@ -12,6 +12,9 @@ VALID_GRADING_TYPES = {"binary", "scaled"}
 def utc_now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
+def parse_iso_datetime(dt_text):
+    return datetime.fromisoformat(dt_text)
+
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -300,7 +303,55 @@ def get_all_tags():
     finally:
         conn.close()
 
-def add_review_history(
+def record_card_review(
+    card_id,
+    score,
+    grading_mode,
+    user_id=DEFAULT_USER_ID,
+    user_answer=None,
+    ai_feedback=None
+):
+    reviewed_at = utc_now_iso()
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        review_id = record_review_history(
+            cur=cur,
+            card_id=card_id,
+            score=score,
+            grading_mode=grading_mode,
+            user_id=user_id,
+            user_answer=user_answer,
+            ai_feedback=ai_feedback,
+            reviewed_at=reviewed_at
+        )
+
+        record_user_card_state(
+            cur=cur,
+            card_id=card_id,
+            score=score,
+            user_id=user_id,
+            reviewed_at=reviewed_at
+        )
+
+        conn.commit()
+
+        return {
+            "success": True,
+            "review_id": review_id
+        }
+
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
+
+    finally:
+        conn.close()
+
+def record_review_history(
+    cur,
     card_id,
     score,
     grading_mode,
@@ -309,27 +360,14 @@ def add_review_history(
     ai_feedback=None,
     reviewed_at=None
 ):
-    assert score in (1, 2, 3, 4, 5), "score must be one of: 1, 2, 3, 4, 5"
-    assert grading_mode in ("manual", "ai"), "grading_mode must be either 'manual' or 'ai'"
+    if score not in (1, 2, 3, 4, 5):
+        raise ValueError("score must be one of: 1, 2, 3, 4, 5")
 
-    reviewed_at = reviewed_at or utc_now_iso()
+    if grading_mode not in ("manual", "ai"):
+        raise ValueError("grading_mode must be either 'manual' or 'ai'")
 
-    conn = get_connection()
-    cur = conn.cursor()
-
-    try:
-        cur.execute("""
-            INSERT INTO review_history (
-                user_id,
-                card_id,
-                reviewed_at,
-                grading_mode,
-                score,
-                user_answer,
-                ai_feedback
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
+    cur.execute("""
+        INSERT INTO review_history (
             user_id,
             card_id,
             reviewed_at,
@@ -337,17 +375,89 @@ def add_review_history(
             score,
             user_answer,
             ai_feedback
-        ))
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        card_id,
+        reviewed_at,
+        grading_mode,
+        score,
+        user_answer,
+        ai_feedback
+    ))
 
-        conn.commit()
-        return {"success": True, "review_id": cur.lastrowid}
+    return cur.lastrowid
 
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
+def record_user_card_state(
+    cur,
+    card_id,
+    score,
+    user_id=DEFAULT_USER_ID,
+    reviewed_at=None
+):
+    interval_days = 1
+    if score not in (1, 2, 3, 4, 5):
+        raise ValueError("score must be one of: 1, 2, 3, 4, 5")
 
-    finally:
-        conn.close()
+    reviewed_at = reviewed_at or utc_now_iso()
+
+    reviewed_dt = datetime.fromisoformat(reviewed_at)
+    next_review_time = (
+        reviewed_dt + timedelta(days=interval_days)
+    ).replace(microsecond=0).isoformat()
+
+    cur.execute("""
+        SELECT recent_scores_json, repetitions
+        FROM user_card_state
+        WHERE user_id = ? AND card_id = ?
+    """, (user_id, card_id))
+
+    row = cur.fetchone()
+
+    if row:
+        try:
+            recent_scores = json.loads(row["recent_scores_json"])
+        except json.JSONDecodeError:
+            recent_scores = []
+
+        repetitions = row["repetitions"] + 1
+    else:
+        recent_scores = []
+        repetitions = 1
+
+    recent_scores.append(score)
+    recent_scores = recent_scores[-MAX_PERFORMANCE_HISTORY:]
+
+    cur.execute("""
+        INSERT INTO user_card_state (
+            user_id,
+            card_id,
+            next_review_time,
+            last_reviewed_at,
+            last_performance,
+            current_interval,
+            repetitions,
+            recent_scores_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, card_id) DO UPDATE SET
+            next_review_time = excluded.next_review_time,
+            last_reviewed_at = excluded.last_reviewed_at,
+            last_performance = excluded.last_performance,
+            current_interval = excluded.current_interval,
+            repetitions = excluded.repetitions,
+            recent_scores_json = excluded.recent_scores_json
+    """, (
+        user_id,
+        card_id,
+        next_review_time,
+        reviewed_at,
+        score,
+        interval_days,
+        repetitions,
+        json.dumps(recent_scores)
+    ))
 
 if __name__ == "__main__":
     init_db()
