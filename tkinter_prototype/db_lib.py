@@ -1,9 +1,17 @@
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "spacedrep.db"
+PRIVATE_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private"
+
+if str(PRIVATE_PATH) not in sys.path:
+    sys.path.insert(0, str(PRIVATE_PATH))
+
+from review_scheduling import calc_next_review_info
+
 DEFAULT_USER_ID = 1
 MAX_PERFORMANCE_HISTORY = 100
 VALID_LENGTHS = {"short", "medium", "long"}
@@ -396,25 +404,16 @@ def record_user_card_state(
     user_id=DEFAULT_USER_ID,
     reviewed_at=None
 ):
-    interval_days = 1
     if score not in (1, 2, 3, 4, 5):
         raise ValueError("score must be one of: 1, 2, 3, 4, 5")
 
-    reviewed_at = reviewed_at or utc_now_iso()
-
-    reviewed_dt = datetime.fromisoformat(reviewed_at)
-    next_review_time = (
-        reviewed_dt + timedelta(days=interval_days)
-    ).replace(microsecond=0).isoformat()
-
     cur.execute("""
-        SELECT recent_scores_json, repetitions
+        SELECT recent_scores_json, repetitions, current_interval
         FROM user_card_state
         WHERE user_id = ? AND card_id = ?
     """, (user_id, card_id))
 
     row = cur.fetchone()
-
     if row:
         try:
             recent_scores = json.loads(row["recent_scores_json"])
@@ -422,9 +421,20 @@ def record_user_card_state(
             recent_scores = []
 
         repetitions = row["repetitions"] + 1
+        current_interval = row["current_interval"]
     else:
         recent_scores = []
         repetitions = 1
+        current_interval = 1
+
+    next_review_info = calc_next_review_info(
+        score=score,
+        current_interval_days=current_interval,
+        reviewed_at=reviewed_at
+    )
+
+    interval_days = next_review_info["current_interval"]
+    next_review_time = next_review_info["next_review_time"]
 
     recent_scores.append(score)
     recent_scores = recent_scores[-MAX_PERFORMANCE_HISTORY:]

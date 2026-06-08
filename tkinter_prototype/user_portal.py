@@ -67,14 +67,14 @@ def add_card_launch():
     tag_label.pack(side="left")
 
     tags_input = tk.Entry(input_row, width=55)
-    tags_input.pack(side="left", padx=(5, 20))
+    tags_input.pack(side="left", padx=(5, 45))
 
     grading_type = tk.StringVar(value="unselected")
 
     grading_frame = tk.Frame(input_row)
     grading_frame.pack(side="left")
 
-    tk.Label(grading_frame, text="Grading:").pack(side="left", padx=(0, 5))
+    tk.Label(grading_frame, text="Grading:  ").pack(side="left", padx=(0,0))
 
     scaled_radio = tk.Radiobutton(
         grading_frame,
@@ -82,7 +82,7 @@ def add_card_launch():
         variable=grading_type,
         value="scaled"
     )
-    scaled_radio.pack(side="left")
+    scaled_radio.pack(side="left", padx=(5,5))
 
     binary_radio = tk.Radiobutton(
         grading_frame,
@@ -347,71 +347,6 @@ def manual_card_review(tags):
 
     show_question()
 
-def edit_card_launch():
-    edit_window = tk.Toplevel(root)
-    edit_window.title("Edit Questions")
-    edit_window.geometry("1200x600")
-
-    main_frame = tk.Frame(edit_window)
-    main_frame.pack(fill="both", expand=True)
-
-    list_frame = tk.Frame(main_frame)
-    list_frame.pack(side="left", fill="y", padx=10, pady=10)
-
-    tk.Label(list_frame, text="Questions").pack()
-    q_list = tk.Listbox(list_frame, width=40, height=30)
-    q_list.pack(fill="y", expand=True)
-
-    editor_frame = tk.Frame(main_frame)
-    editor_frame.pack(side="left", fill="both", expand=True, padx=10, pady=10)
-
-    tk.Label(editor_frame, text="Question").pack(anchor="w")
-    q_input = tk.Text(editor_frame, width=70, height=10, wrap="word")
-    q_input.pack(fill="x", pady=5)
-
-    tk.Label(editor_frame, text="Answer").pack(anchor="w")
-    a_input = tk.Text(editor_frame, width=70, height=10, wrap="word")
-    a_input.pack(fill="x", pady=5)
-
-    tk.Label(editor_frame, text="Tags (comma-separated)").pack(anchor="w")
-    tags_input = tk.Entry(editor_frame, width=70)
-    tags_input.pack(fill="x", pady=5)
-
-    all_cards = get_cards(["ALL"])
-    to_review = all_cards
-
-    def save_changes():
-        # ToDo
-        return
-
-    save_btn = tk.Button(editor_frame, text="Save Changes", command=save_changes)
-    save_btn.pack(pady=5)
-
-    def refresh_list():
-        q_list.delete(0, "end")
-        for card in to_review:
-            preview = " ".join(card["question"].split()[:3])
-            q_list.insert("end", f"{card['id']} | {preview}...")
-
-    def on_select(event):
-        selection = q_list.curselection()
-        if not selection:
-            return
-
-        card = to_review[selection[0]]
-
-        q_input.delete("1.0", "end")
-        q_input.insert("1.0", card["question"])
-
-        a_input.delete("1.0", "end")
-        a_input.insert("1.0", card["answer"])
-
-        tags_input.delete(0, "end")
-        tags_input.insert(0, ", ".join(card["tags"]))
-
-    q_list.bind("<<ListboxSelect>>", on_select)
-    refresh_list()
-
 root = tk.Tk()
 root.title("Spaced Repition Practice")
 root.geometry("300x100")
@@ -421,10 +356,6 @@ frame.pack(expand=True)
 
 add_card_btn = tk.Button(frame, text="Add Question", command=add_card_launch)
 add_card_btn.pack(side="left", padx=5)
-
-#Need to reconcile editing with review history before an edit button actually makes sense
-#edit_card_btn = tk.Button(frame, text= "Edit Questions", command = edit_card_launch)
-#edit_card_btn.pack(side = "left", padx=5)
 
 review_card_btn = tk.Button(frame, text="Review Questions", command=launch_review_menu)
 review_card_btn.pack(side = "left", padx=5)
