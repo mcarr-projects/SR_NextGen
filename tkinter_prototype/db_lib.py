@@ -1,7 +1,7 @@
 import json
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "spacedrep.db"
@@ -281,11 +281,6 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
     finally:
         conn.close()
 
-
-def get_due_cards(user_id=DEFAULT_USER_ID, as_of=None, limit=None):
-    #TBD
-    return
-
 def row_to_card_dict(row):
     card = dict(row)
     tags = card.get("tags", "")
@@ -404,11 +399,12 @@ def record_user_card_state(
     user_id=DEFAULT_USER_ID,
     reviewed_at=None
 ):
+    #reviewed is always passed in, do not check it
     if score not in (1, 2, 3, 4, 5):
         raise ValueError("score must be one of: 1, 2, 3, 4, 5")
 
     cur.execute("""
-        SELECT recent_scores_json, repetitions, current_interval
+        SELECT recent_scores_json, repetitions, current_interval, last_reviewed_at
         FROM user_card_state
         WHERE user_id = ? AND card_id = ?
     """, (user_id, card_id))
@@ -422,15 +418,18 @@ def record_user_card_state(
 
         repetitions = row["repetitions"] + 1
         current_interval = row["current_interval"]
+        last_review = row["last_reviewed_at"]
     else:
         recent_scores = []
         repetitions = 1
         current_interval = 1
+        last_review = None
 
     next_review_info = calc_next_review_info(
         score=score,
         current_interval_days=current_interval,
-        reviewed_at=reviewed_at
+        reviewed_at=reviewed_at,
+        last_review=last_review
     )
 
     interval_days = next_review_info["current_interval"]

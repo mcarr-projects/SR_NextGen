@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
-from db_lib import add_card, get_cards, get_all_tags, record_card_review
+from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
+
 
 def insert_question(question, answer, tags, grading_type):
     question = question.strip()
@@ -167,12 +168,9 @@ def launch_review_menu():
             return
 
         mode = grading_mode.get()
-
         # Still unused for now, but available later:
         # card_count
         # subjects_input.get()
-
-        
 
         selected = selected_tag.get()
         if selected == "ALL":
@@ -180,16 +178,88 @@ def launch_review_menu():
         else:
             review_tags = [selected]
         if mode == "Manual":
-            config_window.destroy()
-            manual_card_review(review_tags)
+            cards = get_cards(review_tags)
+            now = utc_now_iso()
+
+            due_cards = [card for card in cards if card["next_review_time"] <= now]
+            early_cards = [card for card in cards if card["next_review_time"] > now]
+            early_cards.sort(key=lambda card: card["next_review_time"])
             
+            if not due_cards and not early_cards:
+                messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
+                return
+
+            if len(due_cards) >= card_count:
+                config_window.destroy()
+                manual_card_review(due_cards[:card_count])
+                return
+
+            if not early_cards:
+                config_window.destroy()
+                manual_card_review(due_cards)
+                return
+
+            launch_early_review_popup(
+                parent=config_window,
+                due_cards=due_cards,
+                early_cards=early_cards,
+                card_count=card_count
+            )
+
         else:
             messagebox.showinfo("AI grading", "AI grading is not implemented yet.")
 
     start_btn = tk.Button(config_window, text="Start Review", command=start_review)
     start_btn.pack(pady=10)
 
-def manual_card_review(tags):
+def launch_early_review_popup(parent, due_cards, early_cards, card_count):
+    popup = tk.Toplevel(parent)
+    popup.title("Review Early?")
+    popup.geometry("500x220")
+    popup.transient(parent)
+    popup.grab_set()
+
+    choice = tk.StringVar(value="due_only")
+
+    message = tk.Label(
+        popup,
+        text="Fewer cards are due for review than you selected, would you like to review additional cards early?",
+        wraplength=450,
+        justify="left"
+    )
+    message.pack(anchor="w", padx=20, pady=(20, 10))
+
+    tk.Radiobutton(
+        popup,
+        text="Review only cards due for review",
+        variable=choice,
+        value="due_only"
+    ).pack(anchor="w", padx=20, pady=(5, 2))
+
+    tk.Radiobutton(
+        popup,
+        text="Review additional cards early",
+        variable=choice,
+        value="include_early"
+    ).pack(anchor="w", padx=20, pady=2)
+
+    def start_review_from_popup():
+        if choice.get() == "include_early":
+            to_review = (due_cards + early_cards)[:card_count]
+        else:
+            to_review = due_cards
+
+        popup.destroy()
+        parent.destroy()
+        manual_card_review(to_review)
+
+    tk.Button(
+        popup,
+        text="Review",
+        command=start_review_from_popup
+    ).pack(pady=20)
+
+def manual_card_review(to_review):
     review_window = tk.Toplevel(root)
     review_window.title("Manual Review")
     review_window.geometry("1200x700")
@@ -218,7 +288,6 @@ def manual_card_review(tags):
     bottom_frame = tk.Frame(review_window)
     bottom_frame.pack(side="bottom", pady=10)
 
-    to_review = get_cards(tags)
     curr_index = tk.IntVar(value=0)
     answer_shown = tk.BooleanVar(value=False)
     selected_grade = tk.IntVar(value=0)
