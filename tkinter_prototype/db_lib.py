@@ -43,6 +43,8 @@ def init_db():
             CHECK (length IN ('short', 'medium', 'long')),
         grading_type TEXT
             CHECK (grading_type IN ('binary', 'scaled')),
+        grading_criteria TEXT,
+        llm_grading_info TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -143,7 +145,9 @@ def add_card(
     answer,
     tags=None,
     length="short",
-    grading_type=None,
+    grading_type = None,
+    grading_criteria= None,
+    llm_grading_info = None,
     user_id=DEFAULT_USER_ID,
     next_review_time=None
 ):
@@ -161,9 +165,9 @@ def add_card(
 
     try:
         cur.execute("""
-        INSERT INTO cards (question, answer, length, grading_type)
-        VALUES (?, ?, ?, ?)
-        """, (question, answer, length, grading_type))
+        INSERT INTO cards (question, answer, length, grading_type, grading_criteria, llm_grading_info)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """, (question, answer, length, grading_type, grading_criteria, llm_grading_info))
 
         card_id = cur.lastrowid
 

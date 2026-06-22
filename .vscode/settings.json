@@ -1,5 +1,8 @@
 {
     "python.analysis.extraPaths": [
         "C:/Users/mjcar/LocalDocuments/Side Projects/SR_Private"
+    ],
+    "editor.rulers": [
+        100
     ]
 }

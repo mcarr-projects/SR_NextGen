@@ -3,9 +3,11 @@ from tkinter import messagebox
 from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
 
 
-def insert_question(question, answer, tags, grading_type):
+def insert_question(question, answer, tags, grading_type, grading_criteria=None, llm_grading_info=None):
     question = question.strip()
     answer = answer.strip()
+    grading_criteria = grading_criteria.strip() if grading_criteria else None
+    llm_grading_info = llm_grading_info.strip() if llm_grading_info else None
 
     if not question:
         messagebox.showerror("Missing question", "Question cannot be blank.")
@@ -21,8 +23,11 @@ def insert_question(question, answer, tags, grading_type):
         question,
         answer,
         tags,
-        grading_type=grading_type
+        grading_type=grading_type,
+        grading_criteria=grading_criteria,
+        llm_grading_info=llm_grading_info
     )
+
     if added.get("success"):
         print("Card added.")
         return True
@@ -34,30 +39,50 @@ def insert_question(question, answer, tags, grading_type):
 def add_card_launch():
     add_window = tk.Toplevel(root)
     add_window.title("Add Question")
+    add_window.geometry("1100x650")
 
-    # question / answer boxes
     qna_frame = tk.Frame(add_window)
-    qna_frame.pack(side="top")
+    qna_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
 
-    q_frame = tk.Frame(qna_frame)
-    q_frame.pack(side="left")
+    q_frame = tk.LabelFrame(qna_frame, text="Question")
+    q_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+    q_frame.grid_rowconfigure(0, weight=1)
+    q_frame.grid_columnconfigure(0, weight=1)
 
-    q_label = tk.Label(q_frame, text="Question")
-    q_label.pack(pady=(0, 5))
+    q_input = tk.Text(q_frame, width=50, height=25, wrap="word")
+    q_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
 
-    q_input = tk.Text(q_frame, width=50, height=15, wrap="word")
-    q_input.pack(padx=5, pady=3)
+    right_frame = tk.Frame(qna_frame)
+    right_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
+    right_frame.grid_rowconfigure(0, weight=2)
+    right_frame.grid_rowconfigure(1, weight=1)
+    right_frame.grid_rowconfigure(2, weight=1)
+    right_frame.grid_columnconfigure(0, weight=1)
 
-    a_frame = tk.Frame(qna_frame)
-    a_frame.pack(side="left")
+    answer_frame = tk.LabelFrame(right_frame, text="Answer")
+    answer_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+    answer_frame.grid_rowconfigure(0, weight=1)
+    answer_frame.grid_columnconfigure(0, weight=1)
 
-    a_label = tk.Label(a_frame, text="Answer")
-    a_label.pack(pady=(0, 5))
+    a_input = tk.Text(answer_frame, width=50, height=12, wrap="word")
+    a_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
 
-    a_input = tk.Text(a_frame, width=50, height=15, wrap="word")
-    a_input.pack(padx=5, pady=3)
+    criteria_frame = tk.LabelFrame(right_frame, text="Grading Criteria")
+    criteria_frame.grid(row=1, column=0, sticky="nsew", pady=5)
+    criteria_frame.grid_rowconfigure(0, weight=1)
+    criteria_frame.grid_columnconfigure(0, weight=1)
 
-    # tags + grading type row
+    criteria_input = tk.Text(criteria_frame, width=50, height=6, wrap="word")
+    criteria_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+
+    llm_frame = tk.LabelFrame(right_frame, text="LLM Grading Info")
+    llm_frame.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
+    llm_frame.grid_rowconfigure(0, weight=1)
+    llm_frame.grid_columnconfigure(0, weight=1)
+
+    llm_info_input = tk.Text(llm_frame, width=50, height=6, wrap="word")
+    llm_info_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+
     bottom_frame = tk.Frame(add_window)
     bottom_frame.pack(side="bottom", pady=10)
 
@@ -75,7 +100,7 @@ def add_card_launch():
     grading_frame = tk.Frame(input_row)
     grading_frame.pack(side="left")
 
-    tk.Label(grading_frame, text="Grading:  ").pack(side="left", padx=(0,0))
+    tk.Label(grading_frame, text="Grading:  ").pack(side="left", padx=(0, 0))
 
     scaled_radio = tk.Radiobutton(
         grading_frame,
@@ -83,7 +108,7 @@ def add_card_launch():
         variable=grading_type,
         value="scaled"
     )
-    scaled_radio.pack(side="left", padx=(5,5))
+    scaled_radio.pack(side="left", padx=(5, 5))
 
     binary_radio = tk.Radiobutton(
         grading_frame,
@@ -96,18 +121,20 @@ def add_card_launch():
     def add_handler():
         q_text = q_input.get("1.0", "end-1c")
         a_text = a_input.get("1.0", "end-1c")
+        criteria_text = criteria_input.get("1.0", "end-1c")
+        llm_info_text = llm_info_input.get("1.0", "end-1c")
         tag_text = [t.strip() for t in tags_input.get().split(",") if t.strip()]
 
-        if insert_question(q_text, a_text, tag_text, grading_type.get()):
+        if insert_question(q_text, a_text, tag_text, grading_type.get(), criteria_text, llm_info_text):
             q_input.delete("1.0", "end")
             a_input.delete("1.0", "end")
+            criteria_input.delete("1.0", "end")
+            llm_info_input.delete("1.0", "end")
             tags_input.delete(0, "end")
             grading_type.set("unselected")
 
     add_button = tk.Button(bottom_frame, text="Add Question", command=add_handler)
     add_button.pack(side="top")
-
-    return
 
 def launch_review_menu():
     config_window = tk.Toplevel(root)

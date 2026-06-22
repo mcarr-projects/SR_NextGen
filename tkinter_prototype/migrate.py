@@ -46,8 +46,16 @@ def export_all(export_path=EXPORT_PATH):
 
         card_columns = get_table_columns(cur, "cards")
         has_grading_type = "grading_type" in card_columns
-
+        has_grading_criteria = "grading_criteria" in card_columns
+        has_llm_grading_info = "llm_grading_info" in card_columns
+        
         grading_type_select = "c.grading_type," if has_grading_type else "'scaled' AS grading_type,"
+        grading_criteria_select = ("c.grading_criteria," if has_grading_criteria 
+                                   else "NULL AS grading_criteria,")
+        llm_grading_info_select = ("c.llm_grading_info," if has_llm_grading_info
+                                   else "NULL AS llm_grading_info,")
+        
+
 
         cur.execute(f"""
             SELECT
@@ -56,6 +64,8 @@ def export_all(export_path=EXPORT_PATH):
                 c.answer,
                 c.length,
                 {grading_type_select}
+                {grading_criteria_select}
+                {llm_grading_info_select}
                 c.created_at,
                 c.updated_at,
                 COALESCE(GROUP_CONCAT(DISTINCT t.name), '') AS tags
@@ -152,6 +162,8 @@ def import_all(export_path=EXPORT_PATH):
             created_at = card.get("created_at") or utc_now_iso()
             updated_at = card.get("updated_at") or utc_now_iso()
             tags = card.get("tags", [])
+            grading_criteria = card.get("grading_criteria")
+            llm_grading_info = card.get("llm_grading_info")
 
             cur.execute("""
                 INSERT INTO cards (
@@ -160,16 +172,20 @@ def import_all(export_path=EXPORT_PATH):
                     answer,
                     length,
                     grading_type,
+                    grading_criteria,
+                    llm_grading_info,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 card_id,
                 question,
                 answer,
                 length,
                 grading_type,
+                grading_criteria,
+                llm_grading_info,
                 created_at,
                 updated_at
             ))
