@@ -252,6 +252,8 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
                 c.answer,
                 c.length,
                 c.grading_type,
+                c.grading_criteria,
+                c.llm_grading_info,
                 c.created_at,
                 c.updated_at,
                 ucs.next_review_time,

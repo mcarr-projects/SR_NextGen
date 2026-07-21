@@ -136,6 +136,12 @@ def add_card_launch():
     add_button = tk.Button(bottom_frame, text="Add Question", command=add_handler)
     add_button.pack(side="top")
 
+def dummy_ai_card_review(to_review):
+    messagebox.showinfo(
+        "Dummy AI Review",
+        f"{len(to_review)} cards were selected for AI review."
+    )
+
 def launch_review_menu():
     config_window = tk.Toplevel(root)
     config_window.title("Review Config")
@@ -195,51 +201,50 @@ def launch_review_menu():
             return
 
         mode = grading_mode.get()
-        # Still unused for now, but available later:
-        # card_count
-        # subjects_input.get()
+        review_callback = manual_card_review if mode == "Manual" else dummy_ai_card_review
 
         selected = selected_tag.get()
-        if selected == "ALL":
-            review_tags = ["ALL"]
-        else:
-            review_tags = [selected]
-        if mode == "Manual":
-            cards = get_cards(review_tags)
-            now = utc_now_iso()
+        review_tags = ["ALL"] if selected == "ALL" else [selected]
 
-            due_cards = [card for card in cards if card["next_review_time"] <= now]
-            early_cards = [card for card in cards if card["next_review_time"] > now]
-            early_cards.sort(key=lambda card: card["next_review_time"])
-            
-            if not due_cards and not early_cards:
-                messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
-                return
+        cards = get_cards(review_tags)
+        now = utc_now_iso()
 
-            if len(due_cards) >= card_count:
-                config_window.destroy()
-                manual_card_review(due_cards[:card_count])
-                return
+        due_cards = [card for card in cards if card["next_review_time"] <= now]
+        early_cards = [card for card in cards if card["next_review_time"] > now]
+        early_cards.sort(key=lambda card: card["next_review_time"])
 
-            if not early_cards:
-                config_window.destroy()
-                manual_card_review(due_cards)
-                return
+        if not due_cards and not early_cards:
+            messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
+            return
 
-            launch_early_review_popup(
-                parent=config_window,
-                due_cards=due_cards,
-                early_cards=early_cards,
-                card_count=card_count
-            )
+        if len(due_cards) >= card_count:
+            config_window.destroy()
+            review_callback(due_cards[:card_count])
+            return
 
-        else:
-            messagebox.showinfo("AI grading", "AI grading is not implemented yet.")
+        if not early_cards:
+            config_window.destroy()
+            review_callback(due_cards)
+            return
+
+        launch_early_review_popup(
+            parent=config_window,
+            due_cards=due_cards,
+            early_cards=early_cards,
+            card_count=card_count,
+            review_callback=review_callback
+        )
 
     start_btn = tk.Button(config_window, text="Start Review", command=start_review)
     start_btn.pack(pady=10)
 
-def launch_early_review_popup(parent, due_cards, early_cards, card_count):
+def launch_early_review_popup(
+    parent,
+    due_cards,
+    early_cards,
+    card_count,
+    review_callback
+):
     popup = tk.Toplevel(parent)
     popup.title("Review Early?")
     popup.geometry("500x220")
@@ -278,7 +283,7 @@ def launch_early_review_popup(parent, due_cards, early_cards, card_count):
 
         popup.destroy()
         parent.destroy()
-        manual_card_review(to_review)
+        review_callback(to_review)
 
     tk.Button(
         popup,
