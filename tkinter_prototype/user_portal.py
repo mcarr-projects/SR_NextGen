@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox
 from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
-
+from ai_grading import validate_grade_result
 
 def insert_question(question, answer, tags, grading_type, grading_criteria=None, llm_grading_info=None):
     question = question.strip()
@@ -137,10 +137,190 @@ def add_card_launch():
     add_button.pack(side="top")
 
 def dummy_ai_card_review(to_review):
-    messagebox.showinfo(
-        "Dummy AI Review",
-        f"{len(to_review)} cards were selected for AI review."
+    if not to_review:
+        messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
+        return
+
+    review_window = tk.Toplevel(root)
+    review_window.title("Dummy AI Review")
+    review_window.geometry("1200x750")
+
+    qna_frame = tk.Frame(review_window)
+    qna_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
+
+    q_frame = tk.LabelFrame(qna_frame, text="Question")
+    q_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+    q_input = tk.Text(q_frame, width=60, height=30, wrap="word")
+    q_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    right_frame = tk.Frame(qna_frame)
+    right_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
+
+    student_frame = tk.LabelFrame(right_frame, text="Your Answer")
+    student_answer_input = tk.Text(student_frame, width=60, height=30, wrap="word")
+    student_answer_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    grader_frame = tk.Frame(right_frame)
+    grader_frame.grid_rowconfigure(0, weight=3)
+    grader_frame.grid_rowconfigure(1, weight=1)
+    grader_frame.grid_rowconfigure(2, weight=1)
+    grader_frame.grid_rowconfigure(3, weight=2)
+    grader_frame.grid_columnconfigure(0, weight=1)
+
+    comparison_frame = tk.LabelFrame(grader_frame, text="Answer Comparison")
+    comparison_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+
+    comparison_input = tk.Text(comparison_frame, width=60, height=14, wrap="word")
+    comparison_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    criteria_frame = tk.LabelFrame(grader_frame, text="Grading Criteria")
+    criteria_frame.grid(row=1, column=0, sticky="nsew", pady=5)
+
+    criteria_input = tk.Text(criteria_frame, width=60, height=5, wrap="word")
+    criteria_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    llm_frame = tk.LabelFrame(grader_frame, text="LLM Grading Info")
+    llm_frame.grid(row=2, column=0, sticky="nsew", pady=5)
+
+    llm_input = tk.Text(llm_frame, width=60, height=5, wrap="word")
+    llm_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    feedback_frame = tk.LabelFrame(grader_frame, text="AI Feedback")
+    feedback_frame.grid(row=3, column=0, sticky="nsew", pady=(5, 0))
+
+    feedback_input = tk.Text(feedback_frame, width=60, height=8, wrap="word")
+    feedback_input.pack(fill="both", expand=True, padx=5, pady=5)
+
+    bottom_frame = tk.Frame(review_window)
+    bottom_frame.pack(side="bottom", pady=10)
+
+    student_controls = tk.Frame(bottom_frame)
+    grader_controls = tk.Frame(bottom_frame)
+
+    curr_index = tk.IntVar(value=0)
+    selected_grade = tk.IntVar(value=0)
+    saved_user_answer = tk.StringVar(value="")
+    grade_buttons = []
+
+    def set_readonly_text(widget, text):
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.config(state="disabled")
+
+    def choose_grade(grade):
+        selected_grade.set(grade)
+        save_grade_btn.config(state="normal")
+
+    def configure_grade_buttons(card):
+        for button in grade_buttons:
+            button.destroy()
+
+        grade_buttons.clear()
+        selected_grade.set(0)
+        save_grade_btn.config(state="disabled")
+
+        if card["grading_type"] == "binary":
+            grade_options = [("Incorrect", 1), ("Correct", 5)]
+        else:
+            grade_options = [(str(grade), grade) for grade in range(1, 6)]
+
+        for label, grade in grade_options:
+            button = tk.Radiobutton(
+                grade_frame,
+                text=label,
+                variable=selected_grade,
+                value=grade,
+                command=lambda g=grade: choose_grade(g)
+            )
+            button.pack(side="left")
+            grade_buttons.append(button)
+
+    def show_question():
+        card = to_review[curr_index.get()]
+
+        set_readonly_text(q_input, card["question"])
+        student_answer_input.delete("1.0", "end")
+        saved_user_answer.set("")
+        selected_grade.set(0)
+
+        grader_frame.pack_forget()
+        grader_controls.pack_forget()
+        student_frame.pack(fill="both", expand=True)
+        student_controls.pack()
+        student_answer_input.focus_set()
+
+    def submit_answer():
+        card = to_review[curr_index.get()]
+        user_answer = student_answer_input.get("1.0", "end-1c").strip()
+        saved_user_answer.set(user_answer)
+
+        comparison_text = f"Your Answer:\n{user_answer}\n\nSuggested Answer:\n{card['answer']}"
+
+        set_readonly_text(comparison_input, comparison_text)
+        set_readonly_text(criteria_input, card.get("grading_criteria") or "No grading criteria provided.")
+        set_readonly_text(llm_input, card.get("llm_grading_info") or "No additional LLM grading information provided.")
+
+        feedback_input.delete("1.0", "end")
+        configure_grade_buttons(card)
+
+        student_frame.pack_forget()
+        student_controls.pack_forget()
+        grader_frame.pack(fill="both", expand=True)
+        grader_controls.pack()
+        feedback_input.focus_set()
+
+    def submit_grade_and_next():
+        card = to_review[curr_index.get()]
+
+        try:
+            grade_result = validate_grade_result(card, {
+                "score": selected_grade.get(),
+                "feedback": feedback_input.get("1.0", "end-1c")
+            })
+        except (TypeError, ValueError) as e:
+            messagebox.showerror("Invalid grade result", str(e))
+            return
+
+        result = record_card_review(
+            card_id=card["id"],
+            score=grade_result["score"],
+            grading_mode="ai",
+            user_answer=saved_user_answer.get(),
+            ai_feedback=grade_result["feedback"]
+        )
+
+        if not result.get("success"):
+            messagebox.showerror("Review not saved", result.get("error", "Unknown database error"))
+            return
+
+        next_index = curr_index.get() + 1
+        if next_index >= len(to_review):
+            messagebox.showinfo("Done", "All cards reviewed!")
+            review_window.destroy()
+            return
+
+        curr_index.set(next_index)
+        show_question()
+
+    submit_answer_btn = tk.Button(student_controls, text="Submit Answer", command=submit_answer)
+    submit_answer_btn.pack()
+
+    grade_frame = tk.Frame(grader_controls)
+    grade_frame.pack(side="left", padx=20)
+
+    tk.Label(grade_frame, text="Grade:").pack(side="left", padx=(0, 5))
+
+    save_grade_btn = tk.Button(
+        grader_controls,
+        text="Save Grade / Next",
+        command=submit_grade_and_next,
+        state="disabled"
     )
+    save_grade_btn.pack(side="left", padx=10)
+
+    show_question()
 
 def launch_review_menu():
     config_window = tk.Toplevel(root)
