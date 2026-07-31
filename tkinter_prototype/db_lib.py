@@ -119,30 +119,40 @@ def init_db() -> None:
         """)
 
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS ai_calls (
+        CREATE TABLE IF NOT EXISTS llm_calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            review_id INTEGER NOT NULL,
+            user_id INTEGER,
+            session_id TEXT,
+            purpose TEXT NOT NULL CHECK (length(trim(purpose)) > 0),
             provider TEXT NOT NULL,
             model TEXT NOT NULL,
+            provider_request_id TEXT,
             request_json TEXT NOT NULL,
             response_text TEXT,
-            input_tokens INTEGER
-                CHECK (input_tokens IS NULL OR input_tokens >= 0),
-            output_tokens INTEGER
-                CHECK (output_tokens IS NULL OR output_tokens >= 0),
-            status TEXT NOT NULL
-                CHECK (status IN ('completed', 'failed')),
+            input_tokens INTEGER CHECK (input_tokens IS NULL OR input_tokens >= 0),
+            output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+            estimated_cost_usd REAL CHECK (estimated_cost_usd IS NULL OR estimated_cost_usd >= 0),
+            status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
             error_message TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (review_id) REFERENCES review_history(id)
+            latency_ms INTEGER CHECK (latency_ms IS NULL OR latency_ms >= 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS review_llm_calls (
+            review_id INTEGER NOT NULL,
+            llm_call_id INTEGER NOT NULL UNIQUE,
+            PRIMARY KEY (review_id, llm_call_id),
+            FOREIGN KEY (review_id) REFERENCES review_history(id),
+            FOREIGN KEY (llm_call_id) REFERENCES llm_calls(id)
         );
         """)
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_card_tags_tag_id ON card_tags(tag_id);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_card_state_user_next_review ON user_card_state(user_id, next_review_time);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed ON review_history(user_id, card_id, reviewed_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_calls_review_id ON ai_calls(review_id);")
-
+        
 def clean_tags(tags):
 
     def standardize_tag(tag):
@@ -490,58 +500,50 @@ def record_user_card_state(
         json.dumps(recent_scores)
     ))
 
-def record_ai_call(
-    review_id,
-    provider,
-    model,
-    request_json,
-    status,
-    response_text=None,
-    input_tokens=None,
-    output_tokens=None,
-    error_message=None
-):
-    if status not in ("completed", "failed"):
-        raise ValueError("status must be either 'completed' or 'failed'")
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    try:
+def record_llm_call(
+    purpose: str,
+    provider: str,
+    model: str,
+    request_json: str,
+    status: str,
+    user_id: int | None = DEFAULT_USER_ID,
+    session_id: str | None = None,
+    provider_request_id: str | None = None,
+    response_text: str | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    estimated_cost_usd: float | None = None,
+    error_message: str | None = None,
+    latency_ms: int | None = None,
+) -> int:
+    
+    if status not in {"completed", "failed"}:
+        raise ValueError("status must be one of: completed, failed")
+    if not purpose.strip():
+        raise ValueError("purpose cannot be empty")
+    
+    with get_db() as conn:
+        cur = conn.cursor()
         cur.execute("""
-        INSERT INTO ai_calls (
-            review_id,
-            provider,
-            model,
-            request_json,
-            response_text,
-            input_tokens,
-            output_tokens,
-            status,
-            error_message
+        INSERT INTO llm_calls (
+            user_id, session_id, purpose, provider, model, provider_request_id,
+            request_json, response_text, input_tokens, output_tokens,
+            estimated_cost_usd, status, error_message, latency_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            review_id,
-            provider,
-            model,
-            request_json,
-            response_text,
-            input_tokens,
-            output_tokens,
-            status,
-            error_message
+            user_id, session_id, purpose, provider, model, provider_request_id,
+            request_json, response_text, input_tokens, output_tokens,
+            estimated_cost_usd, status, error_message, latency_ms
         ))
+        return cur.lastrowid
 
-        conn.commit()
-        return {"success": True, "ai_call_id": cur.lastrowid}
-
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
-
-    finally:
-        conn.close()
+def link_llm_call_to_review(review_id: int, llm_call_id: int) -> None:
+    with get_db() as conn:
+        conn.execute("""
+        INSERT INTO review_llm_calls (review_id, llm_call_id)
+        VALUES (?, ?)
+        """, (review_id, llm_call_id))
 
 if __name__ == "__main__":
     init_db()

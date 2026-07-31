@@ -8,8 +8,8 @@ from db_lib import DB_PATH, DEFAULT_USER_ID, init_db, utc_now_iso
 EXPORT_PATH = Path(__file__).parent / "migration_export.json"
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+def get_connection(db_path=DB_PATH):
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -33,15 +33,22 @@ def get_table_columns(cur, table_name):
     return {row["name"] for row in cur.fetchall()}
 
 
-def export_all(export_path=EXPORT_PATH):
-    conn = get_connection()
+def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
+    source_db_path = Path(source_db_path)
+
+    if not source_db_path.exists():
+        raise FileNotFoundError(f"Source database file not found: {source_db_path}")
+
+    conn = get_connection(source_db_path)
     cur = conn.cursor()
 
     try:
         data = {
             "cards": [],
             "user_card_state": [],
-            "review_history": []
+            "review_history": [],
+            "llm_calls": [],
+            "review_llm_calls": []
         }
 
         card_columns = get_table_columns(cur, "cards")
@@ -127,13 +134,50 @@ def export_all(export_path=EXPORT_PATH):
 
             data["review_history"] = [dict(row) for row in cur.fetchall()]
 
+        if table_exists(cur, "llm_calls"):
+            cur.execute("""
+                SELECT
+                    id,
+                    user_id,
+                    session_id,
+                    purpose,
+                    provider,
+                    model,
+                    provider_request_id,
+                    request_json,
+                    response_text,
+                    input_tokens,
+                    output_tokens,
+                    estimated_cost_usd,
+                    status,
+                    error_message,
+                    latency_ms,
+                    created_at
+                FROM llm_calls
+                ORDER BY id ASC
+            """)
+
+            data["llm_calls"] = [dict(row) for row in cur.fetchall()]
+
+        if table_exists(cur, "review_llm_calls"):
+            cur.execute("""
+                SELECT review_id, llm_call_id
+                FROM review_llm_calls
+                ORDER BY review_id ASC, llm_call_id ASC
+            """)
+
+            data["review_llm_calls"] = [dict(row) for row in cur.fetchall()]
+
         with open(export_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
         print(
             f"Exported {len(data['cards'])} cards, "
             f"{len(data['user_card_state'])} card states, and "
-            f"{len(data['review_history'])} reviews to {export_path}"
+            f"{len(data['review_history'])} reviews, "
+            f"{len(data['llm_calls'])} LLM calls, and "
+            f"{len(data['review_llm_calls'])} review/LLM links from "
+            f"{source_db_path} to {export_path}"
         )
 
         return data
@@ -292,7 +336,53 @@ def import_all(export_path=EXPORT_PATH):
                 review.get("ai_feedback")
             ))
 
-        for table_name in ("cards", "review_history"):
+        for llm_call in data.get("llm_calls", []):
+            cur.execute("""
+                INSERT INTO llm_calls (
+                    id,
+                    user_id,
+                    session_id,
+                    purpose,
+                    provider,
+                    model,
+                    provider_request_id,
+                    request_json,
+                    response_text,
+                    input_tokens,
+                    output_tokens,
+                    estimated_cost_usd,
+                    status,
+                    error_message,
+                    latency_ms,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                llm_call["id"],
+                llm_call.get("user_id"),
+                llm_call.get("session_id"),
+                llm_call["purpose"],
+                llm_call["provider"],
+                llm_call["model"],
+                llm_call.get("provider_request_id"),
+                llm_call["request_json"],
+                llm_call.get("response_text"),
+                llm_call.get("input_tokens"),
+                llm_call.get("output_tokens"),
+                llm_call.get("estimated_cost_usd"),
+                llm_call["status"],
+                llm_call.get("error_message"),
+                llm_call.get("latency_ms"),
+                llm_call.get("created_at") or utc_now_iso()
+            ))
+
+        for link in data.get("review_llm_calls", []):
+            cur.execute("""
+                INSERT INTO review_llm_calls (review_id, llm_call_id)
+                VALUES (?, ?)
+            """, (link["review_id"], link["llm_call_id"]))
+
+        for table_name in ("cards", "review_history", "llm_calls"):
             cur.execute(f"""
                 UPDATE sqlite_sequence
                 SET seq = (
@@ -307,7 +397,9 @@ def import_all(export_path=EXPORT_PATH):
         print(
             f"Imported {len(data.get('cards', []))} cards, "
             f"{len(data.get('user_card_state', []))} card states, and "
-            f"{len(data.get('review_history', []))} reviews."
+            f"{len(data.get('review_history', []))} reviews, "
+            f"{len(data.get('llm_calls', []))} LLM calls, and "
+            f"{len(data.get('review_llm_calls', []))} review/LLM links."
         )
 
     except Exception as e:
@@ -343,14 +435,37 @@ def rebuild_db_from_export(export_path=EXPORT_PATH):
     import_all(export_path)
 
 
-def migrate_db():
-    if not DB_PATH.exists():
-        raise FileNotFoundError(f"Database file not found: {DB_PATH}")
-
-    export_all()
+def migrate_db(source_db_path=DB_PATH):
+    export_all(source_db_path)
     rebuild_db_from_export()
     print("Database migration complete.")
 
 
+def select_source_db():
+    while True:
+        use_default = input(f"Migrate the current default database, {DB_PATH.name}? (y/n): ").strip().lower()
+        if use_default in {"y", "yes"}:
+            return DB_PATH
+        if use_default in {"n", "no"}:
+            break
+        print("Please enter y or n.")
+
+    while True:
+        filename = input("Enter the filename of a database in the current working directory: ").strip()
+        source_db_path = Path.cwd() / filename
+
+        if not filename:
+            print("Please enter a filename.")
+        elif Path(filename).name != filename:
+            print("Please enter only a filename, not a path.")
+        elif not source_db_path.is_file():
+            print(f"Database file not found: {source_db_path}")
+        elif source_db_path.resolve() == DB_PATH.resolve():
+            print(f"That is the default database. Choose y at the first prompt to migrate {DB_PATH.name}.")
+        else:
+            print(f"Using source database: {source_db_path}")
+            return source_db_path
+
+
 if __name__ == "__main__":
-    migrate_db()
+    migrate_db(select_source_db())
