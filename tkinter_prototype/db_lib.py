@@ -343,7 +343,8 @@ def record_card_review(
     grading_mode,
     user_id=DEFAULT_USER_ID,
     user_answer=None,
-    ai_feedback=None
+    ai_feedback=None,
+    llm_call_id=None
 ):
     reviewed_at = utc_now_iso()
 
@@ -362,6 +363,12 @@ def record_card_review(
             reviewed_at=reviewed_at
         )
 
+        if llm_call_id is not None:
+            cur.execute("""
+                INSERT INTO review_llm_calls (review_id, llm_call_id)
+                VALUES (?, ?)
+            """, (review_id, llm_call_id))
+                
         if score != FAILED_AI_SCORE:
             record_user_card_state(
                 cur=cur,
