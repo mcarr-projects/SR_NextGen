@@ -4,40 +4,37 @@ from queue import Empty, Queue
 import threading
 
 from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
+from sr_models import Card
 from ai_grading import grade_answer
 
-def insert_question(question, answer, tags, grading_type, grading_criteria=None, llm_grading_info=None):
-    question = question.strip()
-    answer = answer.strip()
-    grading_criteria = grading_criteria.strip() if grading_criteria else None
-    llm_grading_info = llm_grading_info.strip() if llm_grading_info else None
+def insert_question(
+    question,
+    answer,
+    tags,
+    grading_type,
+    grading_criteria=None,
+    llm_grading_info=None
+):
+    try:
+        card = Card(
+            question=question,
+            answer=answer,
+            tags=tags,
+            grading_type=grading_type if grading_type in ("scaled", "binary") else None,
+            grading_criteria=grading_criteria,
+            llm_grading_info=llm_grading_info
+        )
+        add_card(card)
 
-    if not question:
-        messagebox.showerror("Missing question", "Question cannot be blank.")
+    except (TypeError, ValueError) as error:
+        messagebox.showerror("Invalid card", str(error))
         return False
-    if not answer:
-        messagebox.showerror("Missing answer", "Answer cannot be blank.")
-        return False
-    if grading_type not in ("scaled", "binary"):
-        messagebox.showerror("Missing grading type", "Choose a grading type.")
+    except Exception as error:
+        messagebox.showerror("Add failed", str(error))
         return False
 
-    added = add_card(
-        question,
-        answer,
-        tags,
-        grading_type=grading_type,
-        grading_criteria=grading_criteria,
-        llm_grading_info=llm_grading_info
-    )
-
-    if added.get("success"):
-        print("Card added.")
-        return True
-
-    print("Error:", added.get("error"))
-    messagebox.showerror("Add failed", added.get("error", "Unknown error"))
-    return False
+    print(f"Card added with ID {card.id}.")
+    return True
 
 def add_card_launch():
     add_window = tk.Toplevel(root)

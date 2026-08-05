@@ -98,7 +98,6 @@ class Card:
         if self.grading_type is None:
             raise ValueError("grading_type must be selected before creating a card")
 
-
 @dataclass
 class UserCardState:
     user_id: int
@@ -108,6 +107,9 @@ class UserCardState:
     last_performance: int | None = None
     current_interval: int = 1
     repetitions: int = 0
+    #ef and lapse_count are from a previous more complex scheduling plan, currently unused
+    ef: float = 2.5
+    lapse_count: int = 0
     recent_scores: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -140,7 +142,7 @@ class UserCardState:
 
 
 @dataclass
-class ReviewCard:
+class ReviewItem:
     card: Card
     state: UserCardState
 

@@ -4,6 +4,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
+from sr_models import Card, ReviewItem, UserCardState
 
 DB_PATH = Path(__file__).parent / "spacedrep.db"
 PRIVATE_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private"
@@ -15,8 +16,6 @@ from review_scheduling import calc_next_review_info
 
 DEFAULT_USER_ID = 1
 MAX_PERFORMANCE_HISTORY = 100
-VALID_LENGTHS = {"short", "medium", "long"}
-VALID_GRADING_TYPES = {"binary", "scaled"}
 FAILED_AI_SCORE = -1
 VALID_REVIEW_SCORES = {FAILED_AI_SCORE, 1, 2, 3, 4, 5}
 
@@ -153,102 +152,99 @@ def init_db() -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_card_state_user_next_review ON user_card_state(user_id, next_review_time);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed ON review_history(user_id, card_id, reviewed_at);")
         
-def clean_tags(tags):
-
-    def standardize_tag(tag):
-        return " ".join(word.capitalize() for word in tag.strip().split())
-
-    if tags is None:
-        return []
-    if not isinstance(tags, (list, tuple)):
-        raise TypeError("tags must be a list or tuple of strings")
-
-    cleaned = []
-    seen = set()
-    for tag in tags:
-        if not isinstance(tag, str):
-            raise TypeError("each tag must be a string")
-        clean_tag = standardize_tag(tag)
-        if clean_tag and clean_tag not in seen:
-            cleaned.append(clean_tag)
-            seen.add(clean_tag)
-
-    return cleaned
-
 def add_card(
-    question,
-    answer,
-    tags=None,
-    length="short",
-    grading_type = None,
-    grading_criteria= None,
-    llm_grading_info = None,
-    user_id=DEFAULT_USER_ID,
-    next_review_time=None
-):
-    if length not in VALID_LENGTHS:
-        raise ValueError("length must be one of: short, medium, long")
+    card: Card,
+    user_id: int = DEFAULT_USER_ID,
+    next_review_time: str | None = None
+) -> Card:
+    if not isinstance(card, Card):
+        raise TypeError("card must be a Card")
 
-    if grading_type not in VALID_GRADING_TYPES:
-        raise ValueError("grading_type must be one of: binary, scaled")
-
-    card_tags = clean_tags(tags)
+    card.validate_for_creation()
     next_review_time = next_review_time or utc_now_iso()
 
-    conn = get_connection()
-    cur = conn.cursor()
+    with get_db() as conn:
+        cur = conn.cursor()
 
-    try:
         cur.execute("""
-        INSERT INTO cards (question, answer, length, grading_type, grading_criteria, llm_grading_info)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (question, answer, length, grading_type, grading_criteria, llm_grading_info))
+            INSERT INTO cards (
+                question,
+                answer,
+                length,
+                grading_type,
+                grading_criteria,
+                llm_grading_info
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            card.question,
+            card.answer,
+            card.length,
+            card.grading_type,
+            card.grading_criteria,
+            card.llm_grading_info
+        ))
 
         card_id = cur.lastrowid
 
-        for tag in card_tags:
-            cur.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (tag,))
-            cur.execute("SELECT id FROM tags WHERE name = ?", (tag,))
+        for tag in card.tags:
+            cur.execute(
+                "INSERT OR IGNORE INTO tags (name) VALUES (?)",
+                (tag,)
+            )
+            cur.execute(
+                "SELECT id FROM tags WHERE name = ?",
+                (tag,)
+            )
             tag_id = cur.fetchone()["id"]
 
             cur.execute("""
-            INSERT OR IGNORE INTO card_tags (card_id, tag_id)
-            VALUES (?, ?)
+                INSERT OR IGNORE INTO card_tags (card_id, tag_id)
+                VALUES (?, ?)
             """, (card_id, tag_id))
 
         cur.execute("""
-        INSERT INTO user_card_state (user_id, card_id, next_review_time)
-        VALUES (?, ?, ?)
+            INSERT INTO user_card_state (
+                user_id,
+                card_id,
+                next_review_time
+            )
+            VALUES (?, ?, ?)
         """, (user_id, card_id, next_review_time))
 
-        conn.commit()
-        return {"success": True, "card_id": card_id, "tags": card_tags}
+        cur.execute("""
+            SELECT created_at, updated_at
+            FROM cards
+            WHERE id = ?
+        """, (card_id,))
+        timestamp_row = cur.fetchone()
 
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
+    card.id = card_id
+    card.created_at = timestamp_row["created_at"]
+    card.updated_at = timestamp_row["updated_at"]
+    return card
 
-    finally:
-        conn.close()
-
-def get_cards(tags, user_id=DEFAULT_USER_ID):
+def get_cards(
+    tags: list[str],
+    user_id: int = DEFAULT_USER_ID
+) -> list[ReviewItem]:
     if not isinstance(tags, list):
         raise TypeError("tags must be a list; use ['ALL'] to fetch all cards")
 
     if not tags:
-        raise ValueError("tags must be a non-empty list; use ['ALL'] to fetch all cards")
+        raise ValueError(
+            "tags must be a non-empty list; use ['ALL'] to fetch all cards"
+        )
 
     if "ALL" in tags and tags != ["ALL"]:
         raise ValueError("use ['ALL'] by itself, not mixed with other tags")
 
-    for tag in tags:
-        if not isinstance(tag, str):
-            raise TypeError("each tag must be a string")
+    if any(not isinstance(tag, str) for tag in tags):
+        raise TypeError("each tag must be a string")
 
-    conn = get_connection()
-    cur = conn.cursor()
+    with get_db() as conn:
+        cur = conn.cursor()
 
-    try:
         if tags == ["ALL"]:
             cur.execute("""
                 SELECT id
@@ -290,6 +286,7 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
                 c.llm_grading_info,
                 c.created_at,
                 c.updated_at,
+                ucs.user_id,
                 ucs.next_review_time,
                 ucs.last_reviewed_at,
                 ucs.last_performance,
@@ -297,9 +294,13 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
                 ucs.repetitions,
                 ucs.ef,
                 ucs.lapse_count,
-                COALESCE(GROUP_CONCAT(DISTINCT t.name), '') AS tags
+                ucs.recent_scores_json,
+                COALESCE(
+                    GROUP_CONCAT(DISTINCT t.name),
+                    ''
+                ) AS tags
             FROM cards c
-            LEFT JOIN user_card_state ucs
+            JOIN user_card_state ucs
                 ON ucs.card_id = c.id
                 AND ucs.user_id = ?
             LEFT JOIN card_tags ct
@@ -311,21 +312,52 @@ def get_cards(tags, user_id=DEFAULT_USER_ID):
             ORDER BY c.id ASC
         """, (user_id, *card_ids))
 
-        rows = cur.fetchall()
-        return [row_to_card_dict(row) for row in rows]
+        return [
+            row_to_review_item(row)
+            for row in cur.fetchall()
+        ]
 
-    except Exception as e:
-        print("Error retrieving cards:", e)
-        return []
+def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
+    tags = [
+        tag
+        for tag in row["tags"].split(",")
+        if tag
+    ]
 
-    finally:
-        conn.close()
+    try:
+        recent_scores = json.loads(row["recent_scores_json"])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"invalid recent_scores_json for card {row['id']}"
+        ) from error
 
-def row_to_card_dict(row):
-    card = dict(row)
-    tags = card.get("tags", "")
-    card["tags"] = [tag for tag in tags.split(",") if tag] if tags else []
-    return card
+    card = Card(
+        id=row["id"],
+        question=row["question"],
+        answer=row["answer"],
+        length=row["length"],
+        grading_type=row["grading_type"],
+        grading_criteria=row["grading_criteria"],
+        llm_grading_info=row["llm_grading_info"],
+        tags=tags,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"]
+    )
+
+    state = UserCardState(
+        user_id=row["user_id"],
+        card_id=row["id"],
+        next_review_time=row["next_review_time"],
+        last_reviewed_at=row["last_reviewed_at"],
+        last_performance=row["last_performance"],
+        current_interval=row["current_interval"],
+        repetitions=row["repetitions"],
+        ef=row["ef"],
+        lapse_count=row["lapse_count"],
+        recent_scores=recent_scores
+    )
+
+    return ReviewItem(card=card, state=state)
 
 def get_all_tags():
     try:
@@ -338,26 +370,27 @@ def get_all_tags():
         return []
 
 def record_card_review(
-    card_id,
-    score,
-    grading_mode,
-    user_id=DEFAULT_USER_ID,
-    user_answer=None,
-    ai_feedback=None,
-    llm_call_id=None
+    review_item: ReviewItem,
+    score: int,
+    grading_mode: str,
+    user_answer: str | None = None,
+    ai_feedback: str | None = None,
+    llm_call_id: int | None = None
 ):
+    if not isinstance(review_item, ReviewItem):
+        raise TypeError("review_item must be a ReviewItem")
+
     reviewed_at = utc_now_iso()
 
-    conn = get_connection()
-    cur = conn.cursor()
+    with get_db() as conn:
+        cur = conn.cursor()
 
-    try:
         review_id = record_review_history(
             cur=cur,
-            card_id=card_id,
+            card_id=review_item.id,
             score=score,
             grading_mode=grading_mode,
-            user_id=user_id,
+            user_id=review_item.user_id,
             user_answer=user_answer,
             ai_feedback=ai_feedback,
             reviewed_at=reviewed_at
@@ -365,32 +398,27 @@ def record_card_review(
 
         if llm_call_id is not None:
             cur.execute("""
-                INSERT INTO review_llm_calls (review_id, llm_call_id)
+                INSERT INTO review_llm_calls (
+                    review_id,
+                    llm_call_id
+                )
                 VALUES (?, ?)
             """, (review_id, llm_call_id))
-                
+
         if score != FAILED_AI_SCORE:
             record_user_card_state(
                 cur=cur,
-                card_id=card_id,
+                card_id=review_item.id,
                 score=score,
-                user_id=user_id,
+                user_id=review_item.user_id,
                 reviewed_at=reviewed_at
             )
 
-        conn.commit()
-        return {
-            "success": True,
-            "review_id": review_id,
-            "requires_manual_grading": score == FAILED_AI_SCORE
-        }
-
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
-
-    finally:
-        conn.close()
+    return {
+        "success": True,
+        "review_id": review_id,
+        "requires_manual_grading": score == FAILED_AI_SCORE
+    }
 
 def record_review_history(
     cur,
