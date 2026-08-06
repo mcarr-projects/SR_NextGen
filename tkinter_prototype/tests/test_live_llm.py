@@ -3,7 +3,7 @@ import os
 import unittest
 from uuid import uuid4
 
-import ai_grading
+import tkinter_prototype.llm_grading as llm_grading
 import db_lib
 import gemini_calls
 
@@ -24,7 +24,7 @@ class TestGeminiLive(unittest.TestCase):
         self.assertTrue(os.getenv("GOOGLE_API_KEY"), "GOOGLE_API_KEY is missing from the environment or .env")
         session_id = f"live-test-{uuid4()}"
 
-        result = ai_grading.grade_answer(DUMMY_CARD, "4.0", session_id=session_id)
+        result = llm_grading.grade_answer(DUMMY_CARD, "4.0", session_id=session_id)
 
         self.assertFalse(result["requires_manual_grading"], result["feedback"])
         self.assertEqual(result["score"], 5)

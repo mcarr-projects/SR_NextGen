@@ -5,7 +5,7 @@ import threading
 
 from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
 from sr_models import Card
-from ai_grading import grade_answer
+from llm_grading import grade_answer
 
 def insert_question(
     question,
@@ -197,6 +197,9 @@ def ai_card_review(to_review):
     grade_result = {}
     result_queue = Queue()
 
+    def current_item():
+        return to_review[curr_index.get()]
+
     def set_readonly_text(widget, text):
         widget.config(state="normal")
         widget.delete("1.0", "end")
@@ -204,8 +207,7 @@ def ai_card_review(to_review):
         widget.config(state="disabled")
 
     def show_question():
-        card = to_review[curr_index.get()]
-        set_readonly_text(q_input, card["question"])
+        set_readonly_text(q_input, current_item().card.question)
         student_answer_input.delete("1.0", "end")
         saved_user_answer.set("")
         grade_result.clear()
@@ -217,14 +219,17 @@ def ai_card_review(to_review):
         student_answer_input.focus_set()
 
     def finish_grading(result):
-        card = to_review[curr_index.get()]
+        card = current_item().card
         grade_result.update(result)
-        comparison = f"Your Answer:\n{saved_user_answer.get()}\n\nSuggested Answer:\n{card['answer']}"
+
+        comparison = f"Your Answer:\n{saved_user_answer.get()}\n\nSuggested Answer:\n{card.answer}"
         set_readonly_text(comparison_input, comparison)
-        set_readonly_text(criteria_input, card.get("grading_criteria") or "No grading criteria provided.")
-        set_readonly_text(llm_input, card.get("llm_grading_info") or "No additional LLM grading information provided.")
+        set_readonly_text(criteria_input, card.grading_criteria or "No grading criteria provided.")
+        set_readonly_text(llm_input, card.llm_grading_info or "No additional LLM grading information provided.")
+
         score_text = "Manual grading required" if result["requires_manual_grading"] else f"Score: {result['score']}"
         set_readonly_text(feedback_input, f"{score_text}\n\n{result['feedback']}")
+
         student_frame.pack_forget()
         student_controls.pack_forget()
         grader_frame.pack(fill="both", expand=True)
@@ -242,17 +247,18 @@ def ai_card_review(to_review):
             submit_answer_btn.config(text="Submit Answer", state="normal")
             messagebox.showerror("AI grading error", str(result))
             return
+
         finish_grading(result)
 
     def submit_answer():
-        card = to_review[curr_index.get()]
+        review_item = current_item()
         user_answer = student_answer_input.get("1.0", "end-1c").strip()
         saved_user_answer.set(user_answer)
         submit_answer_btn.config(text="Grading...", state="disabled")
 
         def run_grader():
             try:
-                result_queue.put(("success", grade_answer(card, user_answer)))
+                result_queue.put(("success", grade_answer(review_item.card, user_answer)))
             except Exception as error:
                 result_queue.put(("error", error))
 
@@ -260,20 +266,20 @@ def ai_card_review(to_review):
         review_window.after(100, poll_for_grade)
 
     def submit_grade_and_next():
-        card = to_review[curr_index.get()]
         save_grade_btn.config(state="disabled")
-        result = record_card_review(
-            card_id=card["id"],
-            score=grade_result["score"],
-            grading_mode="ai",
-            user_answer=saved_user_answer.get(),
-            ai_feedback=grade_result["feedback"],
-            llm_call_id=grade_result["llm_call_id"]
-        )
 
-        if not result.get("success"):
+        try:
+            record_card_review(
+                review_item=current_item(),
+                score=grade_result["score"],
+                grading_mode="ai",
+                user_answer=saved_user_answer.get(),
+                ai_feedback=grade_result["feedback"],
+                llm_call_id=grade_result["llm_call_id"]
+            )
+        except Exception as error:
             save_grade_btn.config(state="normal")
-            messagebox.showerror("Review not saved", result.get("error", "Unknown database error"))
+            messagebox.showerror("Review not saved", str(error))
             return
 
         next_index = curr_index.get() + 1
@@ -281,11 +287,13 @@ def ai_card_review(to_review):
             messagebox.showinfo("Done", "All cards reviewed!")
             review_window.destroy()
             return
+
         curr_index.set(next_index)
         show_question()
 
     submit_answer_btn = tk.Button(student_controls, text="Submit Answer", command=submit_answer)
     submit_answer_btn.pack()
+
     save_grade_btn = tk.Button(
         grader_controls,
         text="Save Result / Next",
@@ -293,6 +301,7 @@ def ai_card_review(to_review):
         state="disabled"
     )
     save_grade_btn.pack(side="left", padx=10)
+
     show_question()
 
 def launch_review_menu():
@@ -334,7 +343,6 @@ def launch_review_menu():
     subjects_frame.pack(fill="x", padx=10, pady=10)
 
     available_tags = ["ALL"] + get_all_tags()
-
     selected_tag = tk.StringVar(value="ALL")
 
     tag_menu = tk.OptionMenu(subjects_frame, selected_tag, *available_tags)
@@ -359,31 +367,31 @@ def launch_review_menu():
         selected = selected_tag.get()
         review_tags = ["ALL"] if selected == "ALL" else [selected]
 
-        cards = get_cards(review_tags)
+        review_items = get_cards(review_tags)
         now = utc_now_iso()
 
-        due_cards = [card for card in cards if card["next_review_time"] <= now]
-        early_cards = [card for card in cards if card["next_review_time"] > now]
-        early_cards.sort(key=lambda card: card["next_review_time"])
+        due_items = [review_item for review_item in review_items if review_item.is_due(now)]
+        early_items = [review_item for review_item in review_items if not review_item.is_due(now)]
+        early_items.sort(key=lambda review_item: review_item.state.next_review_time)
 
-        if not due_cards and not early_cards:
+        if not due_items and not early_items:
             messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
             return
 
-        if len(due_cards) >= card_count:
+        if len(due_items) >= card_count:
             config_window.destroy()
-            review_callback(due_cards[:card_count])
+            review_callback(due_items[:card_count])
             return
 
-        if not early_cards:
+        if not early_items:
             config_window.destroy()
-            review_callback(due_cards)
+            review_callback(due_items)
             return
 
         launch_early_review_popup(
             parent=config_window,
-            due_cards=due_cards,
-            early_cards=early_cards,
+            due_items=due_items,
+            early_items=early_items,
             card_count=card_count,
             review_callback=review_callback
         )
@@ -391,13 +399,7 @@ def launch_review_menu():
     start_btn = tk.Button(config_window, text="Start Review", command=start_review)
     start_btn.pack(pady=10)
 
-def launch_early_review_popup(
-    parent,
-    due_cards,
-    early_cards,
-    card_count,
-    review_callback
-):
+def launch_early_review_popup(parent, due_items, early_items, card_count, review_callback):
     popup = tk.Toplevel(parent)
     popup.title("Review Early?")
     popup.geometry("500x220")
@@ -430,21 +432,21 @@ def launch_early_review_popup(
 
     def start_review_from_popup():
         if choice.get() == "include_early":
-            to_review = (due_cards + early_cards)[:card_count]
+            to_review = (due_items + early_items)[:card_count]
         else:
-            to_review = due_cards
+            to_review = due_items
 
         popup.destroy()
         parent.destroy()
         review_callback(to_review)
 
-    tk.Button(
-        popup,
-        text="Review",
-        command=start_review_from_popup
-    ).pack(pady=20)
+    tk.Button(popup, text="Review", command=start_review_from_popup).pack(pady=20)
 
 def manual_card_review(to_review):
+    if not to_review:
+        messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
+        return
+
     review_window = tk.Toplevel(root)
     review_window.title("Manual Review")
     review_window.geometry("1200x700")
@@ -478,24 +480,18 @@ def manual_card_review(to_review):
     selected_grade = tk.IntVar(value=0)
     saved_user_answer = tk.StringVar(value="")
 
-    if not to_review:
-        messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
-        review_window.destroy()
-        return
-
     def show_question():
-        card = to_review[curr_index.get()]
+        review_item = to_review[curr_index.get()]
         selected_grade.set(0)
         answer_shown.set(False)
         saved_user_answer.set("")
 
         q_input.config(state="normal")
         q_input.delete("1.0", "end")
-        q_input.insert("1.0", card["question"])
+        q_input.insert("1.0", review_item.card.question)
         q_input.config(state="disabled")
 
         a_label.config(text="Your Answer")
-
         a_input.config(state="normal")
         a_input.delete("1.0", "end")
 
@@ -509,7 +505,7 @@ def manual_card_review(to_review):
         if answer_shown.get():
             return
 
-        card = to_review[curr_index.get()]
+        review_item = to_review[curr_index.get()]
         user_answer = a_input.get("1.0", "end-1c").strip()
         saved_user_answer.set(user_answer)
 
@@ -518,12 +514,11 @@ def manual_card_review(to_review):
         a_input.config(state="normal")
         a_input.delete("1.0", "end")
         a_input.insert("1.0", f"Your Answer:\n{user_answer}\n\n")
-        a_input.insert("end", f"Suggested Answer:\n{card['answer']}\n\n")
+        a_input.insert("end", f"Suggested Answer:\n{review_item.card.answer}\n\n")
         a_input.insert("end", "Select a grade below.")
-
         a_input.config(state="disabled")
-        answer_shown.set(True)
 
+        answer_shown.set(True)
         show_ans_btn.config(state="disabled")
 
         for btn in grade_buttons:
@@ -544,30 +539,33 @@ def manual_card_review(to_review):
             messagebox.showerror("Missing grade", "Select a grade before continuing.")
             return
 
-        card = to_review[curr_index.get()]
+        review_item = to_review[curr_index.get()]
+        submit_grade_btn.config(state="disabled")
 
-        result = record_card_review(
-            card_id=card["id"],
-            score=grade,
-            grading_mode="manual",
-            user_answer=saved_user_answer.get()
-        )
-
-        if not result.get("success"):
-            messagebox.showerror(
-                "Review not saved",
-                result.get("error", "Unknown database error")
+        try:
+            record_card_review(
+                review_item=review_item,
+                score=grade,
+                grading_mode="manual",
+                user_answer=saved_user_answer.get()
             )
+        except (TypeError, ValueError) as error:
+            submit_grade_btn.config(state="normal")
+            messagebox.showerror("Invalid review", str(error))
+            return
+        except Exception as error:
+            submit_grade_btn.config(state="normal")
+            messagebox.showerror("Review not saved", str(error))
             return
 
-        idx = curr_index.get() + 1
+        next_index = curr_index.get() + 1
 
-        if idx >= len(to_review):
+        if next_index >= len(to_review):
             messagebox.showinfo("Done", "All cards reviewed!")
             review_window.destroy()
             return
 
-        curr_index.set(idx)
+        curr_index.set(next_index)
         show_question()
 
     show_ans_btn = tk.Button(bottom_frame, text="Show Answer", command=reveal_answer)

@@ -3,28 +3,27 @@ from pathlib import Path
 
 from db_lib import DEFAULT_USER_ID
 from gemini_calls import call_gemini
+from sr_models import Card
 
 GRADING_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private" / "Prompts" / "grading_prompt.txt"
 MAX_FEEDBACK = 2000
 
 
-def build_grading_payload(card: dict, user_answer: str) -> dict:
-    required_fields = ("question", "answer", "grading_type")
-    missing_fields = [field for field in required_fields if field not in card]
-    if missing_fields:
-        raise ValueError(f"card is missing required fields: {', '.join(missing_fields)}")
+def build_grading_payload(card: Card, user_answer: str) -> dict:
+    if not isinstance(card, Card):
+        raise TypeError("card must be a Card")
 
     return {
-        "question": card["question"],
-        "suggested_answer": card["answer"],
+        "question": card.question,
+        "suggested_answer": card.answer,
         "user_answer": user_answer,
-        "grading_type": card["grading_type"],
-        "grading_criteria": card.get("grading_criteria"),
-        "llm_grading_info": card.get("llm_grading_info")
+        "grading_type": card.grading_type,
+        "grading_criteria": card.grading_criteria,
+        "llm_grading_info": card.llm_grading_info
     }
 
 
-def build_grading_prompt(card: dict, user_answer: str, prompt_path: Path = GRADING_PROMPT_PATH) -> str:
+def build_grading_prompt(card: Card, user_answer: str, prompt_path: Path = GRADING_PROMPT_PATH) -> str:
     generic_prompt = prompt_path.read_text(encoding="utf-8").strip()
     if not generic_prompt:
         raise ValueError(f"grading prompt is empty: {prompt_path}")
@@ -45,7 +44,7 @@ def parse_grade_response(response_text: str) -> dict:
     return result
 
 
-def validate_grade_result(card: dict, result: dict) -> dict:
+def validate_grade_result(card: Card, result: dict) -> dict:
     if not isinstance(result, dict):
         raise TypeError("grader result must be a dictionary")
 
@@ -54,7 +53,7 @@ def validate_grade_result(card: dict, result: dict) -> dict:
 
     if type(score) is not int or score not in (1, 2, 3, 4, 5):
         raise ValueError("Grader score must be an integer from 1 through 5")
-    if card["grading_type"] == "binary" and score not in (1, 5):
+    if card.grading_type == "binary" and score not in (1, 5):
         raise ValueError("Binary grader score must be either 1 or 5")
     if not isinstance(feedback, str) or not feedback.strip():
         raise ValueError("Grader feedback must be a non-empty string")
@@ -65,7 +64,7 @@ def validate_grade_result(card: dict, result: dict) -> dict:
 
 
 def grade_answer(
-    card: dict,
+    card: Card,
     user_answer: str,
     user_id: int | None = DEFAULT_USER_ID,
     session_id: str | None = None,
