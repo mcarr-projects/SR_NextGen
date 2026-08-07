@@ -4,16 +4,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import tkinter_prototype.llm_grading as llm_grading
+import llm_grading
+from sr_models import Card
 
 
-DUMMY_CARD = {
-    "question": "What is 2 + 2?",
-    "answer": "4",
-    "grading_type": "binary",
-    "grading_criteria": "Award full credit only when the answer is numerically equal to 4.",
-    "llm_grading_info": "Equivalent numeric forms such as 4.0 are correct."
-}
+DUMMY_CARD = Card(
+    question="What is 2 + 2?",
+    answer="4",
+    grading_type="binary",
+    grading_criteria="Award full credit only when the answer is numerically equal to 4.",
+    llm_grading_info="Equivalent numeric forms such as 4.0 are correct."
+)
 
 
 class TestAIGrading(unittest.TestCase):
@@ -35,11 +36,11 @@ class TestAIGrading(unittest.TestCase):
             "suggested_answer": "4",
             "user_answer": "4.0",
             "grading_type": "binary",
-            "grading_criteria": DUMMY_CARD["grading_criteria"],
-            "llm_grading_info": DUMMY_CARD["llm_grading_info"]
+            "grading_criteria": DUMMY_CARD.grading_criteria,
+            "llm_grading_info": DUMMY_CARD.llm_grading_info
         })
 
-    @patch("ai_grading.call_gemini")
+    @patch("llm_grading.call_gemini")
     def test_grade_answer_invokes_provider_and_returns_validated_grade(self, mock_call_gemini):
         mock_call_gemini.return_value = {
             "status": "completed",
@@ -69,7 +70,7 @@ class TestAIGrading(unittest.TestCase):
             client=None
         )
 
-    @patch("ai_grading.call_gemini")
+    @patch("llm_grading.call_gemini")
     def test_grade_answer_uses_manual_fallback_when_provider_fails(self, mock_call_gemini):
         mock_call_gemini.return_value = {
             "status": "failed",
@@ -83,7 +84,7 @@ class TestAIGrading(unittest.TestCase):
         self.assertEqual(result["llm_call_id"], 18)
         self.assertTrue(result["requires_manual_grading"])
 
-    @patch("ai_grading.call_gemini")
+    @patch("llm_grading.call_gemini")
     def test_grade_answer_uses_manual_fallback_for_invalid_grade(self, mock_call_gemini):
         mock_call_gemini.return_value = {
             "status": "completed",

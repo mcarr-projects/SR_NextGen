@@ -9,7 +9,21 @@ GradingType = Literal["binary", "scaled"]
 VALID_LENGTHS = {"short", "medium", "long"}
 VALID_GRADING_TYPES = {"binary", "scaled"}
 VALID_PERFORMANCE_SCORES = {1, 2, 3, 4, 5}
+FAILED_AI_SCORE = -1
 
+def validate_score(score: int, allow_ai_failure: bool = False) -> None:
+    if type(score) is not int:
+        raise TypeError("score must be an integer")
+
+    if score in VALID_PERFORMANCE_SCORES:
+        return
+
+    if allow_ai_failure and score == FAILED_AI_SCORE:
+        return
+
+    if allow_ai_failure:
+        raise ValueError("score must be one of: -1, 1, 2, 3, 4, 5")
+    raise ValueError("score must be one of: 1, 2, 3, 4, 5")
 
 def clean_tags(tags: list[str] | tuple[str, ...] | None) -> list[str]:
     if tags is None:
@@ -30,7 +44,6 @@ def clean_tags(tags: list[str] | tuple[str, ...] | None) -> list[str]:
 
     return cleaned
 
-
 def parse_db_datetime(value: str | datetime) -> datetime:
     if isinstance(value, str):
         try:
@@ -44,14 +57,12 @@ def parse_db_datetime(value: str | datetime) -> datetime:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 
-
 def clean_optional_text(value: str | None, field_name: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
         raise TypeError(f"{field_name} must be a string or None")
     return value.strip() or None
-
 
 @dataclass
 class Card:
@@ -127,10 +138,10 @@ class UserCardState:
             raise ValueError("ef must be positive")
         if not isinstance(self.lapse_count, int) or self.lapse_count < 0:
             raise ValueError("lapse_count must be a non-negative integer")
-        if self.last_performance is not None and self.last_performance not in VALID_PERFORMANCE_SCORES:
-            raise ValueError("last_performance must be from 1 through 5 or None")
-        if any(score not in VALID_PERFORMANCE_SCORES for score in self.recent_scores):
-            raise ValueError("recent_scores may only contain scores from 1 through 5")
+        if self.last_performance is not None:
+            validate_score(self.last_performance)
+        for score in self.recent_scores:
+            validate_score(score)
 
         parse_db_datetime(self.next_review_time)
         if self.last_reviewed_at is not None:

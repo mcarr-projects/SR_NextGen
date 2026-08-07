@@ -4,7 +4,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
-from sr_models import Card, ReviewItem, UserCardState
+from sr_models import Card, ReviewItem, UserCardState, validate_score
 
 DB_PATH = Path(__file__).parent / "spacedrep.db"
 PRIVATE_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private"
@@ -17,7 +17,6 @@ from review_scheduling import calc_next_review_info
 DEFAULT_USER_ID = 1
 MAX_PERFORMANCE_HISTORY = 100
 FAILED_AI_SCORE = -1
-VALID_REVIEW_SCORES = {FAILED_AI_SCORE, 1, 2, 3, 4, 5}
 
 @contextmanager
 def get_db():
@@ -34,17 +33,27 @@ def get_db():
     finally:
         conn.close()
 
+def validate_next_review_time(next_review_time: str) -> str:
+    if not isinstance(next_review_time, str):
+        raise TypeError("next_review_time must be an ISO datetime string")
+
+    try:
+        parsed_time = parse_iso_datetime(next_review_time)
+    except ValueError as error:
+        raise ValueError(
+            "next_review_time must be a valid ISO datetime string"
+        ) from error
+
+    if parsed_time.tzinfo is None or parsed_time.utcoffset() is None:
+        raise ValueError("next_review_time must include timezone information")
+
+    return parsed_time.astimezone(timezone.utc).isoformat()
+
 def utc_now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 def parse_iso_datetime(dt_text):
     return datetime.fromisoformat(dt_text)
-
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
 
 def init_db() -> None:
     with get_db() as conn:
@@ -161,7 +170,11 @@ def add_card(
         raise TypeError("card must be a Card")
 
     card.validate_for_creation()
-    next_review_time = next_review_time or utc_now_iso()
+
+    if next_review_time is None:
+        next_review_time = utc_now_iso()
+
+    next_review_time = validate_next_review_time(next_review_time)
 
     with get_db() as conn:
         cur = conn.cursor()
@@ -236,11 +249,13 @@ def get_cards(
             "tags must be a non-empty list; use ['ALL'] to fetch all cards"
         )
 
-    if "ALL" in tags and tags != ["ALL"]:
-        raise ValueError("use ['ALL'] by itself, not mixed with other tags")
-
     if any(not isinstance(tag, str) for tag in tags):
         raise TypeError("each tag must be a string")
+
+    tags = list(dict.fromkeys(tags))
+
+    if "ALL" in tags and tags != ["ALL"]:
+        raise ValueError("use ['ALL'] by itself, not mixed with other tags")
 
     with get_db() as conn:
         cur = conn.cursor()
@@ -312,10 +327,7 @@ def get_cards(
             ORDER BY c.id ASC
         """, (user_id, *card_ids))
 
-        return [
-            row_to_review_item(row)
-            for row in cur.fetchall()
-        ]
+        return [row_to_review_item(row) for row in cur.fetchall()]
 
 def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
     tags = [
@@ -359,15 +371,13 @@ def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
 
     return ReviewItem(card=card, state=state)
 
-def get_all_tags():
-    try:
-        with get_connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT name FROM tags ORDER BY name COLLATE NOCASE ASC")
-            return [row["name"] for row in cur.fetchall()]
-    except Exception as e:
-        print("Error retrieving tags:", e)
-        return []
+def get_all_tags() -> list[str]:
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM tags ORDER BY name COLLATE NOCASE ASC"
+        )
+        return [row["name"] for row in cur.fetchall()]
 
 def record_card_review(
     review_item: ReviewItem,
@@ -430,8 +440,7 @@ def record_review_history(
     ai_feedback=None,
     reviewed_at=None
 ):
-    if score not in VALID_REVIEW_SCORES:
-        raise ValueError("score must be one of: -1, 1, 2, 3, 4, 5")
+    validate_score(score, allow_failed_ai=True)
 
     if score == FAILED_AI_SCORE and grading_mode != "ai":
         raise ValueError("score -1 is only valid for failed AI grading")
@@ -466,9 +475,8 @@ def record_user_card_state(
     user_id=DEFAULT_USER_ID,
     reviewed_at=None
 ):
-    #reviewed is always passed in, do not check it
-    if score not in (1, 2, 3, 4, 5):
-        raise ValueError("score must be one of: 1, 2, 3, 4, 5")
+    #reviewed_at is always passed internally, do not check it
+    validate_score(score)
 
     cur.execute("""
         SELECT recent_scores_json, repetitions, current_interval, last_reviewed_at
@@ -500,7 +508,7 @@ def record_user_card_state(
     )
 
     interval_days = next_review_info["current_interval"]
-    next_review_time = next_review_info["next_review_time"]
+    next_review_time = validate_next_review_time(next_review_info["next_review_time"])
 
     recent_scores.append(score)
     recent_scores = recent_scores[-MAX_PERFORMANCE_HISTORY:]

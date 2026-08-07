@@ -77,20 +77,3 @@ def call_gemini(
     finally:
         if own_client and client is not None:
             client.close()
-
-
-def GeminiTest():
-    client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-    try:
-        response = client.interactions.create(
-            model=GEMINI_MODEL,
-            input="Reply with exactly: Gemini API connection successful."
-        )
-        print(response.output_text)
-        return response.output_text
-    finally:
-        client.close()
-
-
-if __name__ == "__main__":
-    GeminiTest()
