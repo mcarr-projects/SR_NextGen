@@ -74,6 +74,7 @@ class Card:
     grading_criteria: str | None = None
     llm_grading_info: str | None = None
     id: int | None = None
+    is_deprecated: bool = False
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -82,7 +83,8 @@ class Card:
             raise TypeError("question must be a string")
         if not isinstance(self.answer, str):
             raise TypeError("answer must be a string")
-
+        if type(self.is_deprecated) is not bool:
+            raise TypeError("is_deprecated must be a boolean")
         self.question = self.question.strip()
         self.answer = self.answer.strip()
         self.grading_criteria = clean_optional_text(self.grading_criteria, "grading_criteria")

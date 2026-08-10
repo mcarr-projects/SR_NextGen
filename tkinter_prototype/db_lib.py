@@ -70,8 +70,18 @@ def init_db() -> None:
                 CHECK (grading_type IN ('binary', 'scaled')),
             grading_criteria TEXT,
             llm_grading_info TEXT,
+            is_deprecated INTEGER NOT NULL DEFAULT 0
+                CHECK (is_deprecated IN (0, 1)),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS card_deprecations (
+            card_id INTEGER PRIMARY KEY,
+            deprecated_at TEXT NOT NULL,
+            FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
         );
         """)
 
@@ -264,6 +274,7 @@ def get_cards(
             cur.execute("""
                 SELECT id
                 FROM cards
+                WHERE is_deprecated = 0
                 ORDER BY id ASC
             """)
             card_ids = [row["id"] for row in cur.fetchall()]
@@ -278,6 +289,7 @@ def get_cards(
                 JOIN tags t
                     ON t.id = ct.tag_id
                 WHERE t.name IN ({placeholders})
+                AND c.is_deprecated = 0
                 GROUP BY c.id
                 HAVING COUNT(DISTINCT t.name) = ?
                 ORDER BY c.id ASC
@@ -301,6 +313,7 @@ def get_cards(
                 c.llm_grading_info,
                 c.created_at,
                 c.updated_at,
+                c.is_deprecated,
                 ucs.user_id,
                 ucs.next_review_time,
                 ucs.last_reviewed_at,
@@ -352,6 +365,7 @@ def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
         grading_criteria=row["grading_criteria"],
         llm_grading_info=row["llm_grading_info"],
         tags=tags,
+        is_deprecated=bool(row["is_deprecated"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"]
     )
@@ -587,6 +601,42 @@ def link_llm_call_to_review(review_id: int, llm_call_id: int) -> None:
         INSERT INTO review_llm_calls (review_id, llm_call_id)
         VALUES (?, ?)
         """, (review_id, llm_call_id))
+
+def deprecate_card(card_id: int) -> None:
+    if not isinstance(card_id, int) or card_id <= 0:
+        raise ValueError("card_id must be a positive integer")
+
+    deprecated_at = utc_now_iso()
+
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            UPDATE cards
+            SET is_deprecated = 1,
+                updated_at = ?
+            WHERE id = ?
+              AND is_deprecated = 0
+        """, (deprecated_at, card_id))
+
+        if cur.rowcount == 0:
+            cur.execute(
+                "SELECT is_deprecated FROM cards WHERE id = ?",
+                (card_id,)
+            )
+            row = cur.fetchone()
+
+            if row is None:
+                raise ValueError(f"card {card_id} does not exist")
+            raise ValueError(f"card {card_id} is already deprecated")
+
+        cur.execute("""
+            INSERT INTO card_deprecations (
+                card_id,
+                deprecated_at
+            )
+            VALUES (?, ?)
+        """, (card_id, deprecated_at))
 
 if __name__ == "__main__":
     init_db()
