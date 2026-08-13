@@ -454,7 +454,10 @@ def record_review_history(
     ai_feedback=None,
     reviewed_at=None
 ):
-    validate_score(score, allow_failed_ai=True)
+    validate_score(score, allow_ai_failure=True)
+
+    if grading_mode not in ("manual", "ai"):
+        raise ValueError("grading_mode must be 'manual' or 'ai'")
 
     if score == FAILED_AI_SCORE and grading_mode != "ai":
         raise ValueError("score -1 is only valid for failed AI grading")

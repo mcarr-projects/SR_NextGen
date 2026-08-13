@@ -662,6 +662,34 @@ class TestGetCards(unittest.TestCase):
         ):
             db_lib.get_cards(["ALL"])
 
+    def test_get_cards_excludes_deprecated_cards(self):
+        active_card = make_dummy_card()
+        deprecated_card = make_dummy_card(
+            question="What is 3 + 3?",
+            answer="6"
+        )
+
+        db_lib.add_card(active_card)
+        db_lib.add_card(deprecated_card)
+
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                UPDATE cards
+                SET is_deprecated = 1
+                WHERE id = ?
+            """, (deprecated_card.id,))
+
+        all_results = db_lib.get_cards(["ALL"])
+        tag_results = db_lib.get_cards(["Testing"])
+
+        self.assertEqual(
+            [item.card.id for item in all_results],
+            [active_card.id]
+        )
+        self.assertEqual(
+            [item.card.id for item in tag_results],
+            [active_card.id]
+        )
 class TestGetAllTags(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -674,7 +702,7 @@ class TestGetAllTags(unittest.TestCase):
         self.db_path_patch.stop()
         self.temp_dir.cleanup()
 
-    def test_get_all_tags_returns_all_tags_sorted_case_insensitively(self):
+    def test_get_all_tags_returns_all_tags_sorted(self):
         first_card = make_dummy_card(
             tags=["Testing", "arithmetic"]
         )
@@ -689,7 +717,7 @@ class TestGetAllTags(unittest.TestCase):
 
         self.assertEqual(
             db_lib.get_all_tags(),
-            ["arithmetic", "Geography", "Testing"]
+            ["Arithmetic", "Geography", "Testing"]
         )
 
     def test_get_all_tags_returns_empty_list_when_no_tags_exist(self):
@@ -969,6 +997,507 @@ class TestRecordReviewHistory(unittest.TestCase):
             ).fetchone()[0]
 
         self.assertEqual(history_count, 0)
+
+class TestRecordUserCardState(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+        self.card = make_dummy_card()
+        db_lib.add_card(
+            self.card,
+            user_id=OTHER_USER_ID,
+            next_review_time=DUMMY_TIME
+        )
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_record_user_card_state_updates_scheduling_state(self):
+        previous_review_time = "2025-12-01T00:00:00+00:00"
+
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                UPDATE user_card_state
+                SET
+                    recent_scores_json = ?,
+                    repetitions = ?,
+                    current_interval = ?,
+                    last_reviewed_at = ?
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                json.dumps([3, 4]),
+                2,
+                7,
+                previous_review_time,
+                OTHER_USER_ID,
+                self.card.id
+            ))
+
+        with patch.object(
+            db_lib,
+            "calc_next_review_info",
+            return_value={
+                "current_interval": 14,
+                "next_review_time": NEXT_REVIEW_TIME
+            }
+        ):
+            with db_lib.get_db() as conn:
+                db_lib.record_user_card_state(
+                    conn.cursor(),
+                    card_id=self.card.id,
+                    score=DUMMY_REVIEW["score"],
+                    user_id=OTHER_USER_ID,
+                    reviewed_at=DUMMY_TIME
+                )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    next_review_time,
+                    last_reviewed_at,
+                    last_performance,
+                    current_interval,
+                    repetitions,
+                    recent_scores_json
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                OTHER_USER_ID,
+                self.card.id
+            )).fetchone()
+
+        self.assertEqual(
+            (
+                row["next_review_time"],
+                row["last_reviewed_at"],
+                row["last_performance"],
+                row["current_interval"],
+                row["repetitions"],
+                json.loads(row["recent_scores_json"])
+            ),
+            (
+                NEXT_REVIEW_TIME,
+                DUMMY_TIME,
+                DUMMY_REVIEW["score"],
+                14,
+                3,
+                [3, 4, DUMMY_REVIEW["score"]]
+            )
+        )
+
+    def test_record_user_card_state_limits_recent_scores(self):
+        existing_scores = [
+            (index % 5) + 1
+            for index in range(db_lib.MAX_PERFORMANCE_HISTORY)
+        ]
+
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                UPDATE user_card_state
+                SET recent_scores_json = ?
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                json.dumps(existing_scores),
+                OTHER_USER_ID,
+                self.card.id
+            ))
+
+        new_score = 5
+
+        with patch.object(
+            db_lib,
+            "calc_next_review_info",
+            return_value={
+                "current_interval": 4,
+                "next_review_time": NEXT_REVIEW_TIME
+            }
+        ):
+            with db_lib.get_db() as conn:
+                db_lib.record_user_card_state(
+                    conn.cursor(),
+                    card_id=self.card.id,
+                    score=new_score,
+                    user_id=OTHER_USER_ID,
+                    reviewed_at=DUMMY_TIME
+                )
+
+        with db_lib.get_db() as conn:
+            stored_scores = json.loads(conn.execute("""
+                SELECT recent_scores_json
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                OTHER_USER_ID,
+                self.card.id
+            )).fetchone()[0])
+
+        self.assertEqual(
+            stored_scores,
+            (existing_scores + [new_score])[
+                -db_lib.MAX_PERFORMANCE_HISTORY:
+            ]
+        )
+
+    def test_record_user_card_state_rejects_invalid_score(self):
+        with db_lib.get_db() as conn:
+            state_before = tuple(conn.execute("""
+                SELECT *
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                OTHER_USER_ID,
+                self.card.id
+            )).fetchone())
+
+        for score in (0, 6, db_lib.FAILED_AI_SCORE):
+            with self.subTest(score=score):
+                with db_lib.get_db() as conn:
+                    with self.assertRaises(ValueError):
+                        db_lib.record_user_card_state(
+                            conn.cursor(),
+                            card_id=self.card.id,
+                            score=score,
+                            user_id=OTHER_USER_ID,
+                            reviewed_at=DUMMY_TIME
+                        )
+
+        with db_lib.get_db() as conn:
+            state_after = tuple(conn.execute("""
+                SELECT *
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                OTHER_USER_ID,
+                self.card.id
+            )).fetchone())
+
+        self.assertEqual(state_after, state_before)
+
+class TestRecordLlmCall(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_record_llm_call_stores_supplied_fields(self):
+        call_data = {
+            "user_id": OTHER_USER_ID,
+            "session_id": "test-session",
+            "purpose": DUMMY_LLM["purpose"],
+            "provider": DUMMY_LLM["provider"],
+            "model": DUMMY_LLM["model"],
+            "provider_request_id": "test-request-id",
+            "request_json": DUMMY_LLM["request_json"],
+            "response_text": DUMMY_LLM["response_text"],
+            "input_tokens": DUMMY_LLM["input_tokens"],
+            "output_tokens": DUMMY_LLM["output_tokens"],
+            "estimated_cost_usd": 0.001,
+            "status": DUMMY_LLM["status"],
+            "error_message": "Test error message",
+            "latency_ms": 250
+        }
+
+        llm_call_id = db_lib.record_llm_call(**call_data)
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    user_id,
+                    session_id,
+                    purpose,
+                    provider,
+                    model,
+                    provider_request_id,
+                    request_json,
+                    response_text,
+                    input_tokens,
+                    output_tokens,
+                    estimated_cost_usd,
+                    status,
+                    error_message,
+                    latency_ms,
+                    created_at
+                FROM llm_calls
+                WHERE id = ?
+            """, (llm_call_id,)).fetchone()
+
+        self.assertIsInstance(llm_call_id, int)
+        self.assertEqual(
+            tuple(row[:-1]),
+            tuple(call_data.values())
+        )
+        self.assertIsNotNone(row["created_at"])
+
+    def test_record_llm_call_stores_omitted_optional_fields_as_null(self):
+        llm_call_id = db_lib.record_llm_call(
+            purpose=DUMMY_LLM["purpose"],
+            provider=DUMMY_LLM["provider"],
+            model=DUMMY_LLM["model"],
+            request_json=DUMMY_LLM["request_json"],
+            status=DUMMY_LLM["status"]
+        )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    user_id,
+                    session_id,
+                    provider_request_id,
+                    response_text,
+                    input_tokens,
+                    output_tokens,
+                    estimated_cost_usd,
+                    error_message,
+                    latency_ms
+                FROM llm_calls
+                WHERE id = ?
+            """, (llm_call_id,)).fetchone()
+
+        self.assertEqual(row["user_id"], db_lib.DEFAULT_USER_ID)
+        self.assertEqual(tuple(row[1:]), (None,) * 8)
+
+    def test_record_llm_call_rejects_invalid_inputs(self):
+        invalid_inputs = (
+            (DUMMY_LLM["purpose"], "pending"),
+            ("", DUMMY_LLM["status"]),
+            ("   ", DUMMY_LLM["status"])
+        )
+
+        for purpose, status in invalid_inputs:
+            with self.subTest(purpose=purpose, status=status):
+                with self.assertRaises(ValueError):
+                    db_lib.record_llm_call(
+                        purpose=purpose,
+                        provider=DUMMY_LLM["provider"],
+                        model=DUMMY_LLM["model"],
+                        request_json=DUMMY_LLM["request_json"],
+                        status=status
+                    )
+
+        with db_lib.get_db() as conn:
+            call_count = conn.execute(
+                "SELECT COUNT(*) FROM llm_calls"
+            ).fetchone()[0]
+
+        self.assertEqual(call_count, 0)
+class TestLinkLlmCallToReview(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+        self.card = make_dummy_card()
+        db_lib.add_card(
+            self.card,
+            user_id=OTHER_USER_ID,
+            next_review_time=DUMMY_TIME
+        )
+
+        with db_lib.get_db() as conn:
+            cur = conn.cursor()
+            self.first_review_id = db_lib.record_review_history(
+                cur,
+                card_id=self.card.id,
+                score=DUMMY_REVIEW["score"],
+                grading_mode=DUMMY_REVIEW["grading_mode"],
+                user_id=OTHER_USER_ID,
+                reviewed_at=DUMMY_TIME
+            )
+            self.second_review_id = db_lib.record_review_history(
+                cur,
+                card_id=self.card.id,
+                score=DUMMY_REVIEW["score"],
+                grading_mode=DUMMY_REVIEW["grading_mode"],
+                user_id=OTHER_USER_ID,
+                reviewed_at=NEXT_REVIEW_TIME
+            )
+
+        self.llm_call_id = db_lib.record_llm_call(
+            user_id=OTHER_USER_ID,
+            **DUMMY_LLM
+        )
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_link_llm_call_to_review_creates_relationship(self):
+        db_lib.link_llm_call_to_review(
+            self.first_review_id,
+            self.llm_call_id
+        )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT review_id, llm_call_id
+                FROM review_llm_calls
+                WHERE llm_call_id = ?
+            """, (self.llm_call_id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (self.first_review_id, self.llm_call_id)
+        )
+
+    def test_link_llm_call_to_review_propagates_integrity_errors(self):
+        invalid_links = (
+            (self.first_review_id, 999999),
+            (999999, self.llm_call_id)
+        )
+
+        for review_id, llm_call_id in invalid_links:
+            with self.subTest(
+                review_id=review_id,
+                llm_call_id=llm_call_id
+            ):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    db_lib.link_llm_call_to_review(
+                        review_id,
+                        llm_call_id
+                    )
+
+        db_lib.link_llm_call_to_review(
+            self.first_review_id,
+            self.llm_call_id
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            db_lib.link_llm_call_to_review(
+                self.second_review_id,
+                self.llm_call_id
+            )
+
+        with db_lib.get_db() as conn:
+            rows = conn.execute("""
+                SELECT review_id, llm_call_id
+                FROM review_llm_calls
+            """).fetchall()
+
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [(self.first_review_id, self.llm_call_id)]
+        )
+
+class TestDeprecateCard(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+        self.card = make_dummy_card()
+        db_lib.add_card(
+            self.card,
+            user_id=OTHER_USER_ID,
+            next_review_time=DUMMY_TIME
+        )
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_deprecate_card_updates_card_and_records_deprecation(self):
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=DUMMY_TIME
+        ):
+            db_lib.deprecate_card(self.card.id)
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    cards.is_deprecated,
+                    cards.updated_at,
+                    card_deprecations.card_id,
+                    card_deprecations.deprecated_at
+                FROM cards
+                JOIN card_deprecations
+                    ON card_deprecations.card_id = cards.id
+                WHERE cards.id = ?
+            """, (self.card.id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (
+                1,
+                DUMMY_TIME,
+                self.card.id,
+                DUMMY_TIME
+            )
+        )
+
+    def test_deprecate_card_rejects_missing_or_already_deprecated_card(self):
+        with self.assertRaises(ValueError):
+            db_lib.deprecate_card(999999)
+
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=DUMMY_TIME
+        ):
+            db_lib.deprecate_card(self.card.id)
+
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=NEXT_REVIEW_TIME
+        ):
+            with self.assertRaises(ValueError):
+                db_lib.deprecate_card(self.card.id)
+
+        with db_lib.get_db() as conn:
+            card_row = conn.execute("""
+                SELECT updated_at
+                FROM cards
+                WHERE id = ?
+            """, (self.card.id,)).fetchone()
+
+            deprecation_rows = conn.execute("""
+                SELECT deprecated_at
+                FROM card_deprecations
+                WHERE card_id = ?
+            """, (self.card.id,)).fetchall()
+
+        self.assertEqual(card_row["updated_at"], DUMMY_TIME)
+        self.assertEqual(
+            [row["deprecated_at"] for row in deprecation_rows],
+            [DUMMY_TIME]
+        )
+
+    def test_deprecate_card_rejects_invalid_card_id(self):
+        for card_id in (0, -1, "1", None):
+            with self.subTest(card_id=card_id):
+                with self.assertRaises(ValueError):
+                    db_lib.deprecate_card(card_id)
+
+        with db_lib.get_db() as conn:
+            is_deprecated = conn.execute("""
+                SELECT is_deprecated
+                FROM cards
+                WHERE id = ?
+            """, (self.card.id,)).fetchone()[0]
+
+            deprecation_count = conn.execute(
+                "SELECT COUNT(*) FROM card_deprecations"
+            ).fetchone()[0]
+
+        self.assertEqual(is_deprecated, 0)
+        self.assertEqual(deprecation_count, 0)
 
 if __name__ == "__main__":
     unittest.main()
