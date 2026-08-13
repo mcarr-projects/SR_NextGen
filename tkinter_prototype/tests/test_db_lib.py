@@ -10,6 +10,7 @@ from contextlib import closing
 from sr_models import Card, ReviewItem
 
 DUMMY_TIME = "2026-01-01T00:00:00+00:00"
+NEXT_REVIEW_TIME = "2026-01-05T00:00:00+00:00"
 OTHER_USER_ID = 2
 
 DUMMY_CARD = {
@@ -660,6 +661,314 @@ class TestGetCards(unittest.TestCase):
             rf"invalid recent_scores_json for card {card.id}"
         ):
             db_lib.get_cards(["ALL"])
+
+class TestGetAllTags(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_all_tags_returns_all_tags_sorted_case_insensitively(self):
+        first_card = make_dummy_card(
+            tags=["Testing", "arithmetic"]
+        )
+        second_card = make_dummy_card(
+            question="What is the capital of France?",
+            answer="Paris",
+            tags=["Geography", "Testing"]
+        )
+
+        db_lib.add_card(first_card)
+        db_lib.add_card(second_card)
+
+        self.assertEqual(
+            db_lib.get_all_tags(),
+            ["arithmetic", "Geography", "Testing"]
+        )
+
+    def test_get_all_tags_returns_empty_list_when_no_tags_exist(self):
+        self.assertEqual(db_lib.get_all_tags(), [])
+
+class TestRecordCardReview(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_record_card_review_records_successful_review(self):
+        card = make_dummy_card()
+        db_lib.add_card(
+            card,
+            user_id=OTHER_USER_ID,
+            next_review_time=DUMMY_TIME
+        )
+        review_item = db_lib.get_cards(
+            ["ALL"],
+            user_id=OTHER_USER_ID
+        )[0]
+
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=DUMMY_TIME
+        ), patch.object(
+            db_lib,
+            "calc_next_review_info",
+            return_value={
+                "current_interval": 4,
+                "next_review_time": NEXT_REVIEW_TIME
+            }
+        ):
+            result = db_lib.record_card_review(
+                review_item=review_item,
+                score=DUMMY_REVIEW["score"],
+                grading_mode=DUMMY_REVIEW["grading_mode"],
+                user_answer=DUMMY_REVIEW["user_answer"],
+                ai_feedback=DUMMY_REVIEW["ai_feedback"]
+            )
+
+        self.assertTrue(result["success"])
+        self.assertFalse(result["requires_manual_grading"])
+        self.assertIsInstance(result["review_id"], int)
+
+        with db_lib.get_db() as conn:
+            history_row = conn.execute("""
+                SELECT user_id, card_id, score
+                FROM review_history
+                WHERE id = ?
+            """, (result["review_id"],)).fetchone()
+
+            state_row = conn.execute("""
+                SELECT
+                    next_review_time,
+                    last_performance,
+                    current_interval,
+                    repetitions
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (OTHER_USER_ID, card.id)).fetchone()
+
+        self.assertEqual(
+            tuple(history_row),
+            (
+                OTHER_USER_ID,
+                card.id,
+                DUMMY_REVIEW["score"]
+            )
+        )
+        self.assertEqual(
+            tuple(state_row),
+            (
+                NEXT_REVIEW_TIME,
+                DUMMY_REVIEW["score"],
+                4,
+                1
+            )
+        )
+
+    def test_record_card_review_records_failed_ai_and_links_llm_call(self):
+        card = make_dummy_card()
+        db_lib.add_card(card, next_review_time=DUMMY_TIME)
+        review_item = db_lib.get_cards(["ALL"])[0]
+        llm_call_id = db_lib.record_llm_call(**DUMMY_LLM)
+
+        with db_lib.get_db() as conn:
+            state_before = tuple(conn.execute("""
+                SELECT *
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                db_lib.DEFAULT_USER_ID,
+                card.id
+            )).fetchone())
+
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=DUMMY_TIME
+        ):
+            result = db_lib.record_card_review(
+                review_item=review_item,
+                score=db_lib.FAILED_AI_SCORE,
+                grading_mode="ai",
+                llm_call_id=llm_call_id
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["requires_manual_grading"])
+
+        with db_lib.get_db() as conn:
+            history_row = conn.execute("""
+                SELECT user_id, card_id, score
+                FROM review_history
+                WHERE id = ?
+            """, (result["review_id"],)).fetchone()
+
+            link_row = conn.execute("""
+                SELECT review_id, llm_call_id
+                FROM review_llm_calls
+                WHERE review_id = ?
+            """, (result["review_id"],)).fetchone()
+
+            state_after = tuple(conn.execute("""
+                SELECT *
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                db_lib.DEFAULT_USER_ID,
+                card.id
+            )).fetchone())
+
+        self.assertEqual(
+            tuple(history_row),
+            (
+                db_lib.DEFAULT_USER_ID,
+                card.id,
+                db_lib.FAILED_AI_SCORE
+            )
+        )
+        self.assertEqual(
+            tuple(link_row),
+            (result["review_id"], llm_call_id)
+        )
+        self.assertEqual(state_after, state_before)
+
+    def test_record_card_review_rejects_non_review_item(self):
+        with self.assertRaises(TypeError):
+            db_lib.record_card_review(
+                review_item=make_dummy_card(),
+                score=5,
+                grading_mode="manual"
+            )
+
+class TestRecordReviewHistory(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+        self.card = make_dummy_card()
+        db_lib.add_card(
+            self.card,
+            user_id=OTHER_USER_ID,
+            next_review_time=DUMMY_TIME
+        )
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_record_review_history_saves_review_and_returns_id(self):
+        with db_lib.get_db() as conn:
+            review_id = db_lib.record_review_history(
+                conn.cursor(),
+                card_id=self.card.id,
+                score=DUMMY_REVIEW["score"],
+                grading_mode=DUMMY_REVIEW["grading_mode"],
+                user_id=OTHER_USER_ID,
+                user_answer=DUMMY_REVIEW["user_answer"],
+                ai_feedback=DUMMY_REVIEW["ai_feedback"],
+                reviewed_at=DUMMY_TIME
+            )
+
+        self.assertIsInstance(review_id, int)
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    user_id,
+                    card_id,
+                    reviewed_at,
+                    grading_mode,
+                    score,
+                    user_answer,
+                    ai_feedback
+                FROM review_history
+                WHERE id = ?
+            """, (review_id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (
+                OTHER_USER_ID,
+                self.card.id,
+                DUMMY_TIME,
+                DUMMY_REVIEW["grading_mode"],
+                DUMMY_REVIEW["score"],
+                DUMMY_REVIEW["user_answer"],
+                DUMMY_REVIEW["ai_feedback"]
+            )
+        )
+
+    def test_record_review_history_accepts_failed_ai_score(self):
+        with db_lib.get_db() as conn:
+            review_id = db_lib.record_review_history(
+                conn.cursor(),
+                card_id=self.card.id,
+                score=db_lib.FAILED_AI_SCORE,
+                grading_mode="ai",
+                user_id=OTHER_USER_ID,
+                reviewed_at=DUMMY_TIME
+            )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT score, grading_mode
+                FROM review_history
+                WHERE id = ?
+            """, (review_id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (db_lib.FAILED_AI_SCORE, "ai")
+        )
+
+    def test_record_review_history_rejects_invalid_inputs(self):
+        invalid_inputs = (
+            (0, "manual", ValueError),
+            (6, "manual", ValueError),
+            ("5", "manual", TypeError),
+            (db_lib.FAILED_AI_SCORE, "manual", ValueError),
+            (5, "automatic", ValueError)
+        )
+
+        with db_lib.get_db() as conn:
+            cur = conn.cursor()
+
+            for score, grading_mode, expected_error in invalid_inputs:
+                with self.subTest(
+                    score=score,
+                    grading_mode=grading_mode
+                ):
+                    with self.assertRaises(expected_error):
+                        db_lib.record_review_history(
+                            cur,
+                            card_id=self.card.id,
+                            score=score,
+                            grading_mode=grading_mode,
+                            user_id=OTHER_USER_ID,
+                            reviewed_at=DUMMY_TIME
+                        )
+
+            history_count = conn.execute(
+                "SELECT COUNT(*) FROM review_history"
+            ).fetchone()[0]
+
+        self.assertEqual(history_count, 0)
 
 if __name__ == "__main__":
     unittest.main()
