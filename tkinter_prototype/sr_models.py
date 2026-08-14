@@ -5,11 +5,13 @@ from typing import Literal
 
 CardLength = Literal["short", "medium", "long"]
 GradingType = Literal["binary", "scaled"]
+DeckType = Literal["personal", "standard"]
 
 VALID_LENGTHS = {"short", "medium", "long"}
 VALID_GRADING_TYPES = {"binary", "scaled"}
 VALID_PERFORMANCE_SCORES = {1, 2, 3, 4, 5}
 FAILED_AI_SCORE = -1
+VALID_DECK_TYPES = {"personal", "standard"}
 
 def validate_score(score: int, allow_ai_failure: bool = False) -> None:
     if type(score) is not int:
@@ -179,3 +181,47 @@ class ReviewItem:
 
     def is_due(self, at: str | datetime | None = None) -> bool:
         return self.state.is_due(at)
+
+@dataclass
+class Deck:
+    name: str
+    owner_user_id: int
+    deck_type: DeckType = "personal"
+    source_deck_id: int | None = None
+    is_published: bool = False
+    id: int | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if not isinstance(self.owner_user_id, int) or self.owner_user_id <= 0:
+            raise ValueError("owner_user_id must be a positive integer")
+        if self.deck_type not in VALID_DECK_TYPES:
+            raise ValueError("deck_type must be one of: personal, standard")
+        if self.source_deck_id is not None and (
+            not isinstance(self.source_deck_id, int) or self.source_deck_id <= 0
+        ):
+            raise ValueError("source_deck_id must be a positive integer or None")
+        if type(self.is_published) is not bool:
+            raise TypeError("is_published must be a boolean")
+        if self.id is not None and (not isinstance(self.id, int) or self.id <= 0):
+            raise ValueError("id must be a positive integer or None")
+
+        self.name = self.name.strip()
+
+        if not self.name:
+            raise ValueError("name cannot be empty")
+        if self.deck_type == "personal" and self.is_published:
+            raise ValueError("personal decks cannot be published")
+        if self.deck_type == "standard" and self.source_deck_id is not None:
+            raise ValueError("standard decks cannot have a source deck")
+
+        if self.created_at is not None:
+            parse_db_datetime(self.created_at)
+        if self.updated_at is not None:
+            parse_db_datetime(self.updated_at)
+
+
+    

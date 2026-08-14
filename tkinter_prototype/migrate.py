@@ -45,6 +45,7 @@ def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
     try:
         data = {
             "cards": [],
+            "card_deprecations": [],
             "user_card_state": [],
             "review_history": [],
             "llm_calls": [],
@@ -55,13 +56,17 @@ def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
         has_grading_type = "grading_type" in card_columns
         has_grading_criteria = "grading_criteria" in card_columns
         has_llm_grading_info = "llm_grading_info" in card_columns
+        has_is_deprecated = "is_deprecated" in card_columns
         
         grading_type_select = "c.grading_type," if has_grading_type else "'scaled' AS grading_type,"
         grading_criteria_select = ("c.grading_criteria," if has_grading_criteria 
                                    else "NULL AS grading_criteria,")
         llm_grading_info_select = ("c.llm_grading_info," if has_llm_grading_info
                                    else "NULL AS llm_grading_info,")
-        
+        is_deprecated_select = (
+            "c.is_deprecated," if has_is_deprecated
+            else "0 AS is_deprecated,"
+        )
 
 
         cur.execute(f"""
@@ -73,6 +78,7 @@ def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
                 {grading_type_select}
                 {grading_criteria_select}
                 {llm_grading_info_select}
+                {is_deprecated_select}
                 c.created_at,
                 c.updated_at,
                 COALESCE(GROUP_CONCAT(DISTINCT t.name), '') AS tags
@@ -90,6 +96,14 @@ def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
             tag_text = card.get("tags", "")
             card["tags"] = [tag for tag in tag_text.split(",") if tag] if tag_text else []
             data["cards"].append(card)
+
+        if table_exists(cur, "card_deprecations"):
+            cur.execute("""
+                SELECT card_id, deprecated_at
+                FROM card_deprecations
+                ORDER BY card_id ASC
+            """)
+            data["card_deprecations"] = [dict(row) for row in cur.fetchall()]
 
         state_columns = get_table_columns(cur, "user_card_state")
         if state_columns:
@@ -173,6 +187,7 @@ def export_all(source_db_path=DB_PATH, export_path=EXPORT_PATH):
 
         print(
             f"Exported {len(data['cards'])} cards, "
+            f"{len(data['card_deprecations'])} card deprecations, "
             f"{len(data['user_card_state'])} card states, and "
             f"{len(data['review_history'])} reviews, "
             f"{len(data['llm_calls'])} LLM calls, and "
@@ -208,6 +223,7 @@ def import_all(export_path=EXPORT_PATH):
             tags = card.get("tags", [])
             grading_criteria = card.get("grading_criteria")
             llm_grading_info = card.get("llm_grading_info")
+            is_deprecated = card.get("is_deprecated", 0)
 
             cur.execute("""
                 INSERT INTO cards (
@@ -218,10 +234,11 @@ def import_all(export_path=EXPORT_PATH):
                     grading_type,
                     grading_criteria,
                     llm_grading_info,
+                    is_deprecated,
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 card_id,
                 question,
@@ -230,6 +247,7 @@ def import_all(export_path=EXPORT_PATH):
                 grading_type,
                 grading_criteria,
                 llm_grading_info,
+                is_deprecated,
                 created_at,
                 updated_at
             ))
@@ -258,6 +276,18 @@ def import_all(export_path=EXPORT_PATH):
                     card_id,
                     tag_id
                 ))
+
+        for deprecation in data.get("card_deprecations", []):
+            cur.execute("""
+                INSERT INTO card_deprecations (
+                    card_id,
+                    deprecated_at
+                )
+                VALUES (?, ?)
+            """, (
+                deprecation["card_id"],
+                deprecation["deprecated_at"]
+            ))
 
         existing_state_keys = set()
 
@@ -396,6 +426,7 @@ def import_all(export_path=EXPORT_PATH):
 
         print(
             f"Imported {len(data.get('cards', []))} cards, "
+            f"{len(data.get('card_deprecations', []))} card deprecations, "
             f"{len(data.get('user_card_state', []))} card states, and "
             f"{len(data.get('review_history', []))} reviews, "
             f"{len(data.get('llm_calls', []))} LLM calls, and "

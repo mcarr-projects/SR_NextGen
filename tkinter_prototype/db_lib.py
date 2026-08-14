@@ -4,8 +4,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import contextmanager
-from sr_models import Card, ReviewItem, UserCardState, validate_score
-
+from sr_models import (
+    Card, ReviewItem, UserCardState, 
+    validate_score, Deck
+)
 DB_PATH = Path(__file__).parent / "spacedrep.db"
 PRIVATE_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private"
 
@@ -640,6 +642,20 @@ def deprecate_card(card_id: int) -> None:
             )
             VALUES (?, ?)
         """, (card_id, deprecated_at))
+
+def add_card_to_deck(deck: Deck, card: Card) -> None:
+    if not isinstance(deck, Deck):
+        raise TypeError("deck must be a Deck")
+    if not isinstance(card, Card):
+        raise TypeError("card must be a Card")
+    if deck.id is None or card.id is None:
+        raise ValueError("deck and card must be saved")
+
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO deck_cards (deck_id, card_id)
+            VALUES (?, ?)
+        """, (deck.id, card.id))
 
 if __name__ == "__main__":
     init_db()
