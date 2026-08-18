@@ -80,9 +80,31 @@ def init_db() -> None:
         """)
 
         cur.execute("""
+        CREATE TABLE IF NOT EXISTS prototype_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE
+                CHECK (length(trim(username)) > 0),
+            display_name TEXT,
+            role TEXT NOT NULL DEFAULT 'user'
+                CHECK (role IN ('user', 'instructor', 'admin')),
+            is_active INTEGER NOT NULL DEFAULT 1
+                CHECK (is_active IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        cur.execute("""
+            INSERT OR IGNORE INTO prototype_users (
+                id, username, display_name
+            )
+            VALUES (?, ?, ?)
+        """, (DEFAULT_USER_ID, "default", "Default User"))
+
+        cur.execute("""
         CREATE TABLE IF NOT EXISTS card_deprecations (
             card_id INTEGER PRIMARY KEY,
             deprecated_at TEXT NOT NULL,
+
             FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
         );
         """)
@@ -98,9 +120,45 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS card_tags (
             card_id INTEGER NOT NULL,
             tag_id INTEGER NOT NULL,
+
+            UNIQUE (card_id, tag_id),
             FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE,
-            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE,
-            UNIQUE (card_id, tag_id)
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS decks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER NOT NULL,
+            name TEXT NOT NULL
+                CHECK (length(trim(name)) > 0),
+            deck_type TEXT NOT NULL DEFAULT 'personal'
+                CHECK (deck_type IN ('personal', 'standard')),
+            source_deck_id INTEGER,
+            is_published INTEGER NOT NULL DEFAULT 0
+                CHECK (is_published IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            UNIQUE (owner_user_id, name),
+            CHECK (deck_type = 'standard' OR is_published = 0),
+            CHECK (deck_type = 'personal' OR source_deck_id IS NULL),
+            FOREIGN KEY (owner_user_id) REFERENCES prototype_users(id),
+            FOREIGN KEY (source_deck_id) REFERENCES decks(id) ON DELETE SET NULL
+        );
+        """)
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS deck_cards (
+            deck_id INTEGER NOT NULL,
+            card_id INTEGER NOT NULL,
+            position INTEGER
+                CHECK (position IS NULL OR position >= 0),
+
+            PRIMARY KEY (deck_id, card_id),
+            FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
+            FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
         );
         """)
 
@@ -116,7 +174,9 @@ def init_db() -> None:
             ef REAL NOT NULL DEFAULT 2.5,
             lapse_count INTEGER NOT NULL DEFAULT 0,
             recent_scores_json TEXT NOT NULL DEFAULT '[]',
+
             PRIMARY KEY (user_id, card_id),
+            FOREIGN KEY (user_id) REFERENCES prototype_users(id),
             FOREIGN KEY (card_id) REFERENCES cards(id) ON DELETE CASCADE
         );
         """)
@@ -134,6 +194,8 @@ def init_db() -> None:
                 CHECK (score != -1 OR grading_mode = 'ai'),
             user_answer TEXT,
             ai_feedback TEXT,
+
+            FOREIGN KEY (user_id) REFERENCES prototype_users(id),
             FOREIGN KEY (card_id) REFERENCES cards(id)
         );
         """)
@@ -155,7 +217,9 @@ def init_db() -> None:
             status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
             error_message TEXT,
             latency_ms INTEGER CHECK (latency_ms IS NULL OR latency_ms >= 0),
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (user_id) REFERENCES prototype_users(id)
         );
         """)
 
@@ -163,6 +227,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS review_llm_calls (
             review_id INTEGER NOT NULL,
             llm_call_id INTEGER NOT NULL UNIQUE,
+
             PRIMARY KEY (review_id, llm_call_id),
             FOREIGN KEY (review_id) REFERENCES review_history(id),
             FOREIGN KEY (llm_call_id) REFERENCES llm_calls(id)
@@ -170,9 +235,11 @@ def init_db() -> None:
         """)
 
         cur.execute("CREATE INDEX IF NOT EXISTS idx_card_tags_tag_id ON card_tags(tag_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_deck_cards_card_id ON deck_cards(card_id);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_decks_type_published ON decks(deck_type, is_published);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_card_state_user_next_review ON user_card_state(user_id, next_review_time);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed ON review_history(user_id, card_id, reviewed_at);")
-        
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed ON review_history(user_id, card_id, reviewed_at);")  
+
 def add_card(
     card: Card,
     user_id: int = DEFAULT_USER_ID,

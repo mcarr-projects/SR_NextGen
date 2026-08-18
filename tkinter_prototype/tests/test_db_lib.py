@@ -61,6 +61,21 @@ def make_dummy_card(**overrides):
     card_data.update(overrides)
     return Card(**card_data)
 
+def create_test_user(
+    user_id=OTHER_USER_ID,
+    username="other-user",
+    role="user"
+):
+    with db_lib.get_db() as conn:
+        conn.execute("""
+            INSERT INTO prototype_users (
+                id,
+                username,
+                role
+            )
+            VALUES (?, ?, ?)
+        """, (user_id, username, role))
+
 class TestGetDb(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -275,6 +290,7 @@ class TestAddCard(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
@@ -397,6 +413,7 @@ class TestGetCards(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
@@ -690,6 +707,7 @@ class TestGetCards(unittest.TestCase):
             [item.card.id for item in tag_results],
             [active_card.id]
         )
+
 class TestGetAllTags(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -730,6 +748,7 @@ class TestRecordCardReview(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
@@ -888,6 +907,7 @@ class TestRecordReviewHistory(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
         self.card = make_dummy_card()
         db_lib.add_card(
@@ -1005,6 +1025,7 @@ class TestRecordUserCardState(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
         self.card = make_dummy_card()
         db_lib.add_card(
@@ -1185,6 +1206,7 @@ class TestRecordLlmCall(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
@@ -1291,6 +1313,7 @@ class TestRecordLlmCall(unittest.TestCase):
             ).fetchone()[0]
 
         self.assertEqual(call_count, 0)
+
 class TestLinkLlmCallToReview(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1298,6 +1321,7 @@ class TestLinkLlmCallToReview(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
         self.card = make_dummy_card()
         db_lib.add_card(
@@ -1398,6 +1422,7 @@ class TestDeprecateCard(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
+        create_test_user()
 
         self.card = make_dummy_card()
         db_lib.add_card(
