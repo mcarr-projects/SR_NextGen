@@ -7,7 +7,7 @@ import db_lib
 import sqlite3
 from unittest.mock import patch
 from contextlib import closing
-from sr_models import Card, ReviewItem
+from sr_models import Card, ReviewItem, Deck
 
 DUMMY_TIME = "2026-01-01T00:00:00+00:00"
 NEXT_REVIEW_TIME = "2026-01-05T00:00:00+00:00"
@@ -75,6 +75,14 @@ def create_test_user(
             )
             VALUES (?, ?, ?)
         """, (user_id, username, role))
+
+def make_dummy_deck(**overrides):
+    deck_data = {
+        "name": "Testing Deck",
+        "owner_user_id": OTHER_USER_ID
+    }
+    deck_data.update(overrides)
+    return Deck(**deck_data)
 
 class TestGetDb(unittest.TestCase):
     def setUp(self):
@@ -1523,6 +1531,193 @@ class TestDeprecateCard(unittest.TestCase):
 
         self.assertEqual(is_deprecated, 0)
         self.assertEqual(deprecation_count, 0)
+
+class TestAddDeck(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+        create_test_user()
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_add_deck_saves_deck_and_returns_same_object(self):
+        deck = make_dummy_deck()
+
+        result = db_lib.add_deck(deck)
+
+        self.assertIs(result, deck)
+        self.assertIsNotNone(deck.id)
+        self.assertIsNotNone(deck.created_at)
+        self.assertIsNotNone(deck.updated_at)
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    owner_user_id,
+                    name,
+                    deck_type,
+                    source_deck_id,
+                    is_published,
+                    created_at,
+                    updated_at
+                FROM decks
+                WHERE id = ?
+            """, (deck.id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (
+                OTHER_USER_ID,
+                "Testing Deck",
+                "personal",
+                None,
+                0,
+                deck.created_at,
+                deck.updated_at
+            )
+        )
+
+    def test_add_deck_rejects_non_deck(self):
+        with self.assertRaises(TypeError):
+            db_lib.add_deck({"name": "Testing Deck"})
+
+        with db_lib.get_db() as conn:
+            deck_count = conn.execute(
+                "SELECT COUNT(*) FROM decks"
+            ).fetchone()[0]
+
+        self.assertEqual(deck_count, 0)
+
+    def test_add_deck_propagates_integrity_errors(self):
+        first_deck = make_dummy_deck()
+        duplicate_deck = make_dummy_deck()
+
+        db_lib.add_deck(first_deck)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            db_lib.add_deck(duplicate_deck)
+
+        missing_user_deck = make_dummy_deck(
+            name="Missing User Deck",
+            owner_user_id=999999
+        )
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            db_lib.add_deck(missing_user_deck)
+
+        with db_lib.get_db() as conn:
+            deck_count = conn.execute(
+                "SELECT COUNT(*) FROM decks"
+            ).fetchone()[0]
+
+        self.assertEqual(deck_count, 1)
+
+class TestGetDecks(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+        create_test_user()
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_decks_returns_all_decks_sorted(self):
+        first_deck = Deck(
+            name="zebra",
+            owner_user_id=db_lib.DEFAULT_USER_ID
+        )
+        second_deck = Deck(
+            name="Algorithms",
+            owner_user_id=OTHER_USER_ID
+        )
+        third_deck = Deck(
+            name="python",
+            owner_user_id=db_lib.DEFAULT_USER_ID
+        )
+
+        db_lib.add_deck(first_deck)
+        db_lib.add_deck(second_deck)
+        db_lib.add_deck(third_deck)
+
+        results = db_lib.get_decks()
+
+        self.assertTrue(
+            all(isinstance(deck, Deck) for deck in results)
+        )
+        self.assertEqual(
+            [deck.id for deck in results],
+            [
+                second_deck.id,
+                third_deck.id,
+                first_deck.id
+            ]
+        )
+
+    def test_get_decks_filters_by_user(self):
+        default_deck = Deck(
+            name="Default Deck",
+            owner_user_id=db_lib.DEFAULT_USER_ID
+        )
+        other_deck = Deck(
+            name="Other Deck",
+            owner_user_id=OTHER_USER_ID
+        )
+
+        db_lib.add_deck(default_deck)
+        db_lib.add_deck(other_deck)
+
+        results = db_lib.get_decks(
+            user_id=OTHER_USER_ID
+        )
+
+        self.assertEqual(len(results), 1)
+
+        result = results[0]
+
+        self.assertEqual(
+            (
+                result.id,
+                result.owner_user_id,
+                result.name,
+                result.deck_type,
+                result.source_deck_id,
+                result.is_published,
+                result.created_at,
+                result.updated_at
+            ),
+            (
+                other_deck.id,
+                OTHER_USER_ID,
+                "Other Deck",
+                "personal",
+                None,
+                False,
+                other_deck.created_at,
+                other_deck.updated_at
+            )
+        )
+
+    def test_get_decks_returns_empty_list_when_no_decks_match(self):
+        deck = Deck(
+            name="Default Deck",
+            owner_user_id=db_lib.DEFAULT_USER_ID
+        )
+        db_lib.add_deck(deck)
+
+        results = db_lib.get_decks(
+            user_id=OTHER_USER_ID
+        )
+
+        self.assertEqual(results, [])
 
 if __name__ == "__main__":
     unittest.main()

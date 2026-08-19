@@ -411,6 +411,92 @@ def get_cards(
 
         return [row_to_review_item(row) for row in cur.fetchall()]
 
+def add_deck(deck: Deck) -> Deck:
+    if not isinstance(deck, Deck):
+        raise TypeError("deck must be a Deck")
+
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            INSERT INTO decks (
+                owner_user_id,
+                name,
+                deck_type,
+                source_deck_id,
+                is_published
+            )
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            deck.owner_user_id,
+            deck.name,
+            deck.deck_type,
+            deck.source_deck_id,
+            deck.is_published
+        ))
+
+        deck.id = cur.lastrowid
+
+        row = cur.execute("""
+            SELECT created_at, updated_at
+            FROM decks
+            WHERE id = ?
+        """, (deck.id,)).fetchone()
+
+    deck.created_at = row["created_at"]
+    deck.updated_at = row["updated_at"]
+    return deck
+
+def get_decks(user_id: int | None = None) -> list[Deck]:
+    with get_db() as conn:
+        cur = conn.cursor()
+
+        if user_id is None:
+            cur.execute("""
+                SELECT
+                    id,
+                    owner_user_id,
+                    name,
+                    deck_type,
+                    source_deck_id,
+                    is_published,
+                    created_at,
+                    updated_at
+                FROM decks
+                ORDER BY name COLLATE NOCASE ASC
+            """)
+        else:
+            cur.execute("""
+                SELECT
+                    id,
+                    owner_user_id,
+                    name,
+                    deck_type,
+                    source_deck_id,
+                    is_published,
+                    created_at,
+                    updated_at
+                FROM decks
+                WHERE owner_user_id = ?
+                ORDER BY name COLLATE NOCASE ASC
+            """, (user_id,))
+
+        rows = cur.fetchall()
+
+    return [
+        Deck(
+            id=row["id"],
+            owner_user_id=row["owner_user_id"],
+            name=row["name"],
+            deck_type=row["deck_type"],
+            source_deck_id=row["source_deck_id"],
+            is_published=bool(row["is_published"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        )
+        for row in rows
+    ]
+
 def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
     tags = [
         tag
