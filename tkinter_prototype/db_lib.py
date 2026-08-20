@@ -810,6 +810,59 @@ def add_card_to_deck(deck: Deck, card: Card) -> None:
             VALUES (?, ?)
         """, (deck.id, card.id))
 
+def get_deck_cards(deck: Deck) -> list[Card]:
+    if not isinstance(deck, Deck):
+        raise TypeError("deck must be a Deck")
+    if deck.id is None:
+        raise ValueError("deck must be saved")
+
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                c.id,
+                c.question,
+                c.answer,
+                c.length,
+                c.grading_type,
+                c.grading_criteria,
+                c.llm_grading_info,
+                c.is_deprecated,
+                c.created_at,
+                c.updated_at,
+                COALESCE(
+                    GROUP_CONCAT(DISTINCT t.name),
+                    ''
+                ) AS tags
+            FROM cards c
+            JOIN deck_cards dc
+                ON dc.card_id = c.id
+            LEFT JOIN card_tags ct
+                ON ct.card_id = c.id
+            LEFT JOIN tags t
+                ON t.id = ct.tag_id
+            WHERE dc.deck_id = ?
+                AND c.is_deprecated = 0
+            GROUP BY c.id
+            ORDER BY c.id ASC
+        """, (deck.id,)).fetchall()
+
+    return [
+        Card(
+            id=row["id"],
+            question=row["question"],
+            answer=row["answer"],
+            length=row["length"],
+            grading_type=row["grading_type"],
+            grading_criteria=row["grading_criteria"],
+            llm_grading_info=row["llm_grading_info"],
+            tags=[tag for tag in row["tags"].split(",") if tag],
+            is_deprecated=bool(row["is_deprecated"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"]
+        )
+        for row in rows
+    ]
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at {DB_PATH}")

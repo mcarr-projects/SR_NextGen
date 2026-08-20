@@ -1631,22 +1631,15 @@ class TestGetDecks(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_get_decks_returns_all_decks_sorted(self):
-        first_deck = Deck(
-            name="zebra",
-            owner_user_id=db_lib.DEFAULT_USER_ID
+        first_deck = db_lib.add_deck(
+            make_dummy_deck(name="zebra", owner_user_id=db_lib.DEFAULT_USER_ID)
         )
-        second_deck = Deck(
-            name="Algorithms",
-            owner_user_id=OTHER_USER_ID
+        second_deck = db_lib.add_deck(
+            make_dummy_deck(name="Algorithms", owner_user_id=OTHER_USER_ID)
         )
-        third_deck = Deck(
-            name="python",
-            owner_user_id=db_lib.DEFAULT_USER_ID
+        third_deck = db_lib.add_deck(
+            make_dummy_deck(name="python", owner_user_id=db_lib.DEFAULT_USER_ID)
         )
-
-        db_lib.add_deck(first_deck)
-        db_lib.add_deck(second_deck)
-        db_lib.add_deck(third_deck)
 
         results = db_lib.get_decks()
 

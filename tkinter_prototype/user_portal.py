@@ -3,8 +3,10 @@ from tkinter import messagebox
 from queue import Empty, Queue
 import threading
 
-from db_lib import add_card, get_cards, get_all_tags, utc_now_iso, record_card_review
-from sr_models import Card
+from db_lib import (
+    add_card, get_cards, add_deck, get_decks, add_card_to_deck, get_deck_cards,
+    DEFAULT_USER_ID, get_all_tags, utc_now_iso, record_card_review)
+from sr_models import Card, Deck
 from llm_grading import grade_answer
 
 def insert_question(
@@ -599,8 +601,175 @@ def manual_card_review(to_review):
 
     show_question()
 
+def launch_manage_decks():
+    manage_window = tk.Toplevel(root)
+    manage_window.title("Manage Decks")
+    manage_window.geometry("500x400")
+
+    create_frame = tk.LabelFrame(manage_window, text="Create Deck", padx=10, pady=10)
+    create_frame.pack(fill="x", padx=10, pady=10)
+
+    tk.Label(create_frame, text="Deck name").pack(side="left")
+
+    deck_name_input = tk.Entry(create_frame, width=35)
+    deck_name_input.pack(side="left", padx=10, fill="x", expand=True)
+
+    decks_frame = tk.LabelFrame(manage_window, text="Your Decks", padx=10, pady=10)
+    decks_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    deck_list = tk.Listbox(decks_frame)
+    deck_list.pack(fill="both", expand=True)
+
+    current_decks = []
+
+    def refresh_decks(selected_deck_id=None):
+        nonlocal current_decks
+
+        current_decks = get_decks(user_id=DEFAULT_USER_ID)
+        deck_list.delete(0, "end")
+
+        for index, deck in enumerate(current_decks):
+            deck_list.insert("end", deck.name)
+
+            if deck.id == selected_deck_id:
+                deck_list.selection_set(index)
+                deck_list.see(index)
+
+    def create_deck():
+        try:
+            deck = add_deck(Deck(
+                name=deck_name_input.get(),
+                owner_user_id=DEFAULT_USER_ID
+            ))
+        except (TypeError, ValueError) as error:
+            messagebox.showerror("Invalid deck", str(error), parent=manage_window)
+            return
+        except Exception as error:
+            messagebox.showerror("Create failed", str(error), parent=manage_window)
+            return
+
+        deck_name_input.delete(0, "end")
+        refresh_decks(selected_deck_id=deck.id)
+
+    def edit_selected_deck():
+        selection = deck_list.curselection()
+
+        if not selection:
+            messagebox.showerror(
+                "No deck selected",
+                "Select a deck to edit.",
+                parent=manage_window
+            )
+            return
+
+        launch_edit_deck(current_decks[selection[0]])
+
+    create_button = tk.Button(create_frame, text="Create", command=create_deck)
+    create_button.pack(side="left")
+
+    edit_button = tk.Button(
+        decks_frame,
+        text="Edit Selected Deck",
+        command=edit_selected_deck
+    )
+    edit_button.pack(pady=(10, 0))
+
+    deck_name_input.bind("<Return>", lambda event: create_deck())
+    deck_list.bind("<Double-Button-1>", lambda event: edit_selected_deck())
+    deck_name_input.focus_set()
+
+    try:
+        refresh_decks()
+    except Exception as error:
+        messagebox.showerror("Load failed", str(error), parent=manage_window)
+
+def launch_edit_deck(deck):
+    edit_window = tk.Toplevel(root)
+    edit_window.title(f"Edit Deck: {deck.name}")
+    edit_window.geometry("900x550")
+
+    lists_frame = tk.Frame(edit_window)
+    lists_frame.pack(fill="both", expand=True, padx=15, pady=15)
+    lists_frame.grid_rowconfigure(0, weight=1)
+    lists_frame.grid_columnconfigure(0, weight=1)
+    lists_frame.grid_columnconfigure(2, weight=1)
+
+    used_frame = tk.LabelFrame(lists_frame, text="Cards Used", padx=10, pady=10)
+    used_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
+
+    separator = tk.Frame(lists_frame, width=2, bg="gray")
+    separator.grid(row=0, column=1, sticky="ns")
+
+    available_frame = tk.LabelFrame(lists_frame, text="Cards to Add", padx=10, pady=10)
+    available_frame.grid(row=0, column=2, sticky="nsew", padx=(15, 0))
+
+    used_card_list = tk.Listbox(used_frame)
+    used_card_list.pack(fill="both", expand=True)
+
+    available_card_list = tk.Listbox(available_frame)
+    available_card_list.pack(fill="both", expand=True)
+
+    cards_to_add = []
+
+    def card_label(card):
+        return f"{card.id}: {' '.join(card.question.split())}"
+
+    def refresh_cards():
+        nonlocal cards_to_add
+
+        all_cards = [
+            review_item.card
+            for review_item in get_cards(["ALL"], user_id=DEFAULT_USER_ID)
+        ]
+        used_cards = get_deck_cards(deck)
+        used_card_ids = {card.id for card in used_cards}
+        cards_to_add = [
+            card for card in all_cards
+            if card.id not in used_card_ids
+        ]
+
+        used_card_list.delete(0, "end")
+        available_card_list.delete(0, "end")
+
+        for card in used_cards:
+            used_card_list.insert("end", card_label(card))
+
+        for card in cards_to_add:
+            available_card_list.insert("end", card_label(card))
+
+    def add_selected_card():
+        selection = available_card_list.curselection()
+
+        if not selection:
+            messagebox.showerror(
+                "No card selected",
+                "Select a card to add.",
+                parent=edit_window
+            )
+            return
+
+        card = cards_to_add[selection[0]]
+
+        try:
+            add_card_to_deck(deck, card)
+            refresh_cards()
+        except Exception as error:
+            messagebox.showerror("Add failed", str(error), parent=edit_window)
+
+    add_button = tk.Button(
+        available_frame,
+        text="Add Selected Card",
+        command=add_selected_card
+    )
+    add_button.pack(pady=(10, 0))
+
+    try:
+        refresh_cards()
+    except Exception as error:
+        messagebox.showerror("Load failed", str(error), parent=edit_window)
+
 root = tk.Tk()
-root.title("Spaced Repition Practice")
+root.title("Spaced Repetion Practice")
 root.geometry("300x100")
 
 frame = tk.Frame(root)
@@ -611,5 +780,8 @@ add_card_btn.pack(side="left", padx=5)
 
 review_card_btn = tk.Button(frame, text="Review Questions", command=launch_review_menu)
 review_card_btn.pack(side = "left", padx=5)
+
+manage_decks_btn = tk.Button(frame, text="Manage Decks", command=launch_manage_decks)
+manage_decks_btn.pack(side="left", padx=5)
 
 root.mainloop()
