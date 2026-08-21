@@ -7,7 +7,7 @@ import db_lib
 import sqlite3
 from unittest.mock import patch
 from contextlib import closing
-from sr_models import Card, ReviewItem, Deck
+from sr_models import Card, ReviewItem, Deck, UserCardState
 
 DUMMY_TIME = "2026-01-01T00:00:00+00:00"
 NEXT_REVIEW_TIME = "2026-01-05T00:00:00+00:00"
@@ -298,20 +298,15 @@ class TestAddCard(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
-        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
         self.temp_dir.cleanup()
 
-    def test_add_card_saves_card_tags_and_initial_state(self):
+    def test_add_card_saves_card_and_tags_without_state(self):
         card = make_dummy_card()
 
-        result = db_lib.add_card(
-            card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_CARD["next_review_time"]
-        )
+        result = db_lib.add_card(card)
 
         self.assertIs(result, card)
         self.assertIsNotNone(card.id)
@@ -341,7 +336,7 @@ class TestAddCard(unittest.TestCase):
             """, (card.id,)).fetchall()
 
             state_row = conn.execute("""
-                SELECT user_id, next_review_time
+                SELECT *
                 FROM user_card_state
                 WHERE card_id = ?
             """, (card.id,)).fetchone()
@@ -363,13 +358,7 @@ class TestAddCard(unittest.TestCase):
             {row["name"] for row in tag_rows},
             set(DUMMY_CARD["tags"])
         )
-        self.assertEqual(
-            tuple(state_row),
-            (
-                OTHER_USER_ID,
-                DUMMY_CARD["next_review_time"]
-            )
-        )
+        self.assertIsNone(state_row)
 
     def test_add_card_reuses_existing_tags(self):
         shared_tag = DUMMY_CARD["tags"][0]
@@ -381,7 +370,7 @@ class TestAddCard(unittest.TestCase):
         )
 
         db_lib.add_card(first_card)
-        db_lib.add_card(second_card, user_id=OTHER_USER_ID)
+        db_lib.add_card(second_card)
 
         with db_lib.get_db() as conn:
             tag_count = conn.execute("""
@@ -414,20 +403,19 @@ class TestAddCard(unittest.TestCase):
 
         self.assertEqual(card_count, 0)
 
-class TestGetCards(unittest.TestCase):
+class TestGetCardsByTags(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test.db"
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
-        create_test_user()
 
     def tearDown(self):
         self.db_path_patch.stop()
         self.temp_dir.cleanup()
 
-    def test_get_cards_all_returns_complete_review_items_in_card_id_order(self):
+    def test_get_cards_by_tags_all_returns_complete_cards_in_card_id_order(self):
         first_card = make_dummy_card()
         second_card = make_dummy_card(
             question="What is 3 + 3?",
@@ -435,47 +423,17 @@ class TestGetCards(unittest.TestCase):
             tags=["Testing"]
         )
 
-        db_lib.add_card(
-            first_card,
-            next_review_time=DUMMY_TIME
-        )
-        db_lib.add_card(
-            second_card,
-            next_review_time=DUMMY_TIME
-        )
+        db_lib.add_card(first_card)
+        db_lib.add_card(second_card)
 
-        with db_lib.get_db() as conn:
-            conn.execute("""
-                UPDATE user_card_state
-                SET
-                    last_reviewed_at = ?,
-                    last_performance = ?,
-                    current_interval = ?,
-                    repetitions = ?,
-                    ef = ?,
-                    lapse_count = ?,
-                    recent_scores_json = ?
-                WHERE user_id = ? AND card_id = ?
-            """, (
-                DUMMY_TIME,
-                5,
-                4,
-                3,
-                2.2,
-                1,
-                json.dumps([3, 4, 5]),
-                db_lib.DEFAULT_USER_ID,
-                first_card.id
-            ))
-
-        results = db_lib.get_cards(["ALL"])
+        results = db_lib.get_cards_by_tags(["ALL"])
 
         self.assertEqual(len(results), 2)
         self.assertTrue(
-            all(isinstance(item, ReviewItem) for item in results)
+            all(isinstance(card, Card) for card in results)
         )
         self.assertEqual(
-            [item.card.id for item in results],
+            [card.id for card in results],
             [first_card.id, second_card.id]
         )
 
@@ -483,14 +441,14 @@ class TestGetCards(unittest.TestCase):
 
         self.assertEqual(
             (
-                first_result.card.question,
-                first_result.card.answer,
-                first_result.card.length,
-                first_result.card.grading_type,
-                first_result.card.grading_criteria,
-                first_result.card.llm_grading_info,
-                first_result.card.created_at,
-                first_result.card.updated_at
+                first_result.question,
+                first_result.answer,
+                first_result.length,
+                first_result.grading_type,
+                first_result.grading_criteria,
+                first_result.llm_grading_info,
+                first_result.created_at,
+                first_result.updated_at
             ),
             (
                 DUMMY_CARD["question"],
@@ -504,37 +462,11 @@ class TestGetCards(unittest.TestCase):
             )
         )
         self.assertEqual(
-            set(first_result.card.tags),
+            set(first_result.tags),
             set(DUMMY_CARD["tags"])
         )
-        self.assertEqual(
-            (
-                first_result.state.user_id,
-                first_result.state.card_id,
-                first_result.state.next_review_time,
-                first_result.state.last_reviewed_at,
-                first_result.state.last_performance,
-                first_result.state.current_interval,
-                first_result.state.repetitions,
-                first_result.state.ef,
-                first_result.state.lapse_count,
-                first_result.state.recent_scores
-            ),
-            (
-                db_lib.DEFAULT_USER_ID,
-                first_card.id,
-                DUMMY_TIME,
-                DUMMY_TIME,
-                5,
-                4,
-                3,
-                2.2,
-                1,
-                [3, 4, 5]
-            )
-        )
 
-    def test_get_cards_filters_by_all_requested_tags(self):
+    def test_get_cards_by_tags_filters_by_all_requested_tags(self):
         both_tags_card = make_dummy_card()
         single_tag_card = make_dummy_card(
             question="What is 3 + 3?",
@@ -554,91 +486,23 @@ class TestGetCards(unittest.TestCase):
         ):
             db_lib.add_card(card)
 
-        single_tag_results = db_lib.get_cards(["Testing"])
-        both_tag_results = db_lib.get_cards(
+        single_tag_results = db_lib.get_cards_by_tags(["Testing"])
+        both_tag_results = db_lib.get_cards_by_tags(
             ["Testing", "Arithmetic"]
         )
-        unknown_tag_results = db_lib.get_cards(["Unknown"])
+        unknown_tag_results = db_lib.get_cards_by_tags(["Unknown"])
 
         self.assertEqual(
-            [item.card.id for item in single_tag_results],
+            [card.id for card in single_tag_results],
             [both_tags_card.id, single_tag_card.id]
         )
         self.assertEqual(
-            [item.card.id for item in both_tag_results],
+            [card.id for card in both_tag_results],
             [both_tags_card.id]
         )
         self.assertEqual(unknown_tag_results, [])
 
-    def test_get_cards_isolates_user_state(self):
-        shared_card = make_dummy_card()
-        other_user_card = make_dummy_card(
-            question="What is 3 + 3?",
-            answer="6"
-        )
-
-        db_lib.add_card(shared_card)
-        db_lib.add_card(
-            other_user_card,
-            user_id=OTHER_USER_ID
-        )
-
-        other_review_time = "2026-02-01T00:00:00+00:00"
-
-        with db_lib.get_db() as conn:
-            conn.execute("""
-                INSERT INTO user_card_state (
-                    user_id,
-                    card_id,
-                    next_review_time,
-                    last_performance,
-                    current_interval,
-                    repetitions,
-                    recent_scores_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                OTHER_USER_ID,
-                shared_card.id,
-                other_review_time,
-                5,
-                7,
-                2,
-                json.dumps([4, 5])
-            ))
-
-        default_results = db_lib.get_cards(
-            ["ALL"],
-            user_id=db_lib.DEFAULT_USER_ID
-        )
-        other_user_results = db_lib.get_cards(
-            ["ALL"],
-            user_id=OTHER_USER_ID
-        )
-
-        self.assertEqual(
-            [item.card.id for item in default_results],
-            [shared_card.id]
-        )
-        self.assertEqual(
-            [item.card.id for item in other_user_results],
-            [shared_card.id, other_user_card.id]
-        )
-
-        default_state = default_results[0].state
-        other_state = other_user_results[0].state
-
-        self.assertEqual(default_state.user_id, db_lib.DEFAULT_USER_ID)
-        self.assertEqual(default_state.current_interval, 1)
-        self.assertEqual(default_state.recent_scores, [])
-
-        self.assertEqual(other_state.user_id, OTHER_USER_ID)
-        self.assertEqual(other_state.next_review_time, other_review_time)
-        self.assertEqual(other_state.current_interval, 7)
-        self.assertEqual(other_state.repetitions, 2)
-        self.assertEqual(other_state.recent_scores, [4, 5])
-
-    def test_get_cards_validates_tags(self):
+    def test_get_cards_by_tags_validates_tags(self):
         card = make_dummy_card(tags=["Testing"])
         db_lib.add_card(card)
 
@@ -654,40 +518,19 @@ class TestGetCards(unittest.TestCase):
         for tags, expected_error in invalid_inputs:
             with self.subTest(tags=tags):
                 with self.assertRaises(expected_error):
-                    db_lib.get_cards(tags)
+                    db_lib.get_cards_by_tags(tags)
 
-        single_result = db_lib.get_cards(["Testing"])
-        duplicate_result = db_lib.get_cards(
+        single_result = db_lib.get_cards_by_tags(["Testing"])
+        duplicate_result = db_lib.get_cards_by_tags(
             ["Testing", "Testing"]
         )
 
         self.assertEqual(
-            [item.card.id for item in duplicate_result],
-            [item.card.id for item in single_result]
+            [card.id for card in duplicate_result],
+            [card.id for card in single_result]
         )
 
-    def test_get_cards_rejects_malformed_recent_scores(self):
-        card = make_dummy_card()
-        db_lib.add_card(card)
-
-        with db_lib.get_db() as conn:
-            conn.execute("""
-                UPDATE user_card_state
-                SET recent_scores_json = ?
-                WHERE user_id = ? AND card_id = ?
-            """, (
-                "not valid JSON",
-                db_lib.DEFAULT_USER_ID,
-                card.id
-            ))
-
-        with self.assertRaisesRegex(
-            ValueError,
-            rf"invalid recent_scores_json for card {card.id}"
-        ):
-            db_lib.get_cards(["ALL"])
-
-    def test_get_cards_excludes_deprecated_cards(self):
+    def test_get_cards_by_tags_excludes_deprecated_cards(self):
         active_card = make_dummy_card()
         deprecated_card = make_dummy_card(
             question="What is 3 + 3?",
@@ -704,16 +547,175 @@ class TestGetCards(unittest.TestCase):
                 WHERE id = ?
             """, (deprecated_card.id,))
 
-        all_results = db_lib.get_cards(["ALL"])
-        tag_results = db_lib.get_cards(["Testing"])
+        all_results = db_lib.get_cards_by_tags(["ALL"])
+        tag_results = db_lib.get_cards_by_tags(["Testing"])
 
         self.assertEqual(
-            [item.card.id for item in all_results],
+            [card.id for card in all_results],
             [active_card.id]
         )
         self.assertEqual(
-            [item.card.id for item in tag_results],
+            [card.id for card in tag_results],
             [active_card.id]
+        )
+
+class TestGetUserCardStates(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+        create_test_user()
+
+        self.first_card = make_dummy_card()
+        self.second_card = make_dummy_card(
+            question="What is 3 + 3?",
+            answer="6"
+        )
+
+        db_lib.add_card(self.first_card)
+        db_lib.add_card(self.second_card)
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_get_user_card_states_returns_states_keyed_by_card_id(self):
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time,
+                    last_reviewed_at,
+                    last_performance,
+                    current_interval,
+                    repetitions,
+                    ef,
+                    lapse_count,
+                    recent_scores_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                OTHER_USER_ID,
+                self.first_card.id,
+                NEXT_REVIEW_TIME,
+                DUMMY_TIME,
+                5,
+                4,
+                3,
+                2.2,
+                1,
+                json.dumps([3, 4, 5])
+            ))
+
+        results = db_lib.get_user_card_states(OTHER_USER_ID)
+
+        self.assertEqual(
+            list(results),
+            [self.first_card.id]
+        )
+
+        state = results[self.first_card.id]
+
+        self.assertIsInstance(state, UserCardState)
+        self.assertEqual(
+            (
+                state.user_id,
+                state.card_id,
+                state.next_review_time,
+                state.last_reviewed_at,
+                state.last_performance,
+                state.current_interval,
+                state.repetitions,
+                state.ef,
+                state.lapse_count,
+                state.recent_scores
+            ),
+            (
+                OTHER_USER_ID,
+                self.first_card.id,
+                NEXT_REVIEW_TIME,
+                DUMMY_TIME,
+                5,
+                4,
+                3,
+                2.2,
+                1,
+                [3, 4, 5]
+            )
+        )
+
+    def test_get_user_card_states_isolates_users(self):
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time
+                )
+                VALUES (?, ?, ?)
+            """, (
+                db_lib.DEFAULT_USER_ID,
+                self.first_card.id,
+                DUMMY_TIME
+            ))
+
+            conn.execute("""
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time
+                )
+                VALUES (?, ?, ?)
+            """, (
+                OTHER_USER_ID,
+                self.second_card.id,
+                NEXT_REVIEW_TIME
+            ))
+
+        default_states = db_lib.get_user_card_states(
+            db_lib.DEFAULT_USER_ID
+        )
+        other_states = db_lib.get_user_card_states(OTHER_USER_ID)
+
+        self.assertEqual(
+            set(default_states),
+            {self.first_card.id}
+        )
+        self.assertEqual(
+            set(other_states),
+            {self.second_card.id}
+        )
+
+    def test_get_user_card_states_rejects_malformed_recent_scores(self):
+        with db_lib.get_db() as conn:
+            conn.execute("""
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time,
+                    recent_scores_json
+                )
+                VALUES (?, ?, ?, ?)
+            """, (
+                OTHER_USER_ID,
+                self.first_card.id,
+                DUMMY_TIME,
+                "not valid JSON"
+            ))
+
+        with self.assertRaisesRegex(
+            ValueError,
+            rf"invalid recent_scores_json for card {self.first_card.id}"
+        ):
+            db_lib.get_user_card_states(OTHER_USER_ID)
+
+    def test_get_user_card_states_returns_empty_dict_when_no_state_exists(self):
+        self.assertEqual(
+            db_lib.get_user_card_states(OTHER_USER_ID),
+            {}
         )
 
 class TestGetAllTags(unittest.TestCase):
@@ -764,15 +766,15 @@ class TestRecordCardReview(unittest.TestCase):
 
     def test_record_card_review_records_successful_review(self):
         card = make_dummy_card()
-        db_lib.add_card(
-            card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_TIME
+        db_lib.add_card(card)
+        review_item = ReviewItem(
+            card=card,
+            state=UserCardState(
+                user_id=OTHER_USER_ID,
+                card_id=card.id,
+                next_review_time=DUMMY_TIME
+            )
         )
-        review_item = db_lib.get_cards(
-            ["ALL"],
-            user_id=OTHER_USER_ID
-        )[0]
 
         with patch.object(
             db_lib,
@@ -835,8 +837,15 @@ class TestRecordCardReview(unittest.TestCase):
 
     def test_record_card_review_records_failed_ai_and_links_llm_call(self):
         card = make_dummy_card()
-        db_lib.add_card(card, next_review_time=DUMMY_TIME)
-        review_item = db_lib.get_cards(["ALL"])[0]
+        db_lib.add_card(card)
+        review_item = ReviewItem(
+            card=card,
+            state=UserCardState(
+                user_id=db_lib.DEFAULT_USER_ID,
+                card_id=card.id,
+                next_review_time=DUMMY_TIME
+            )
+        )
         llm_call_id = db_lib.record_llm_call(**DUMMY_LLM)
 
         with db_lib.get_db() as conn:
@@ -918,11 +927,7 @@ class TestRecordReviewHistory(unittest.TestCase):
         create_test_user()
 
         self.card = make_dummy_card()
-        db_lib.add_card(
-            self.card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_TIME
-        )
+        db_lib.add_card(self.card)
 
     def tearDown(self):
         self.db_path_patch.stop()
@@ -1036,35 +1041,88 @@ class TestRecordUserCardState(unittest.TestCase):
         create_test_user()
 
         self.card = make_dummy_card()
-        db_lib.add_card(
-            self.card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_TIME
-        )
+        db_lib.add_card(self.card)
 
     def tearDown(self):
         self.db_path_patch.stop()
         self.temp_dir.cleanup()
+
+    def test_record_user_card_state_creates_initial_state(self):
+        with patch.object(
+            db_lib,
+            "calc_next_review_info",
+            return_value={
+                "current_interval": 4,
+                "next_review_time": NEXT_REVIEW_TIME
+            }
+        ):
+            with db_lib.get_db() as conn:
+                db_lib.record_user_card_state(
+                    conn.cursor(),
+                    card_id=self.card.id,
+                    score=DUMMY_REVIEW["score"],
+                    user_id=OTHER_USER_ID,
+                    reviewed_at=DUMMY_TIME
+                )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT
+                    next_review_time,
+                    last_reviewed_at,
+                    last_performance,
+                    current_interval,
+                    repetitions,
+                    recent_scores_json
+                FROM user_card_state
+                WHERE user_id = ? AND card_id = ?
+            """, (
+                OTHER_USER_ID,
+                self.card.id
+            )).fetchone()
+
+        self.assertEqual(
+            (
+                row["next_review_time"],
+                row["last_reviewed_at"],
+                row["last_performance"],
+                row["current_interval"],
+                row["repetitions"],
+                json.loads(row["recent_scores_json"])
+            ),
+            (
+                NEXT_REVIEW_TIME,
+                DUMMY_TIME,
+                DUMMY_REVIEW["score"],
+                4,
+                1,
+                [DUMMY_REVIEW["score"]]
+            )
+        )
 
     def test_record_user_card_state_updates_scheduling_state(self):
         previous_review_time = "2025-12-01T00:00:00+00:00"
 
         with db_lib.get_db() as conn:
             conn.execute("""
-                UPDATE user_card_state
-                SET
-                    recent_scores_json = ?,
-                    repetitions = ?,
-                    current_interval = ?,
-                    last_reviewed_at = ?
-                WHERE user_id = ? AND card_id = ?
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time,
+                    last_reviewed_at,
+                    current_interval,
+                    repetitions,
+                    recent_scores_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
-                json.dumps([3, 4]),
-                2,
-                7,
-                previous_review_time,
                 OTHER_USER_ID,
-                self.card.id
+                self.card.id,
+                DUMMY_TIME,
+                previous_review_time,
+                7,
+                2,
+                json.dumps([3, 4])
             ))
 
         with patch.object(
@@ -1127,13 +1185,18 @@ class TestRecordUserCardState(unittest.TestCase):
 
         with db_lib.get_db() as conn:
             conn.execute("""
-                UPDATE user_card_state
-                SET recent_scores_json = ?
-                WHERE user_id = ? AND card_id = ?
+                INSERT INTO user_card_state (
+                    user_id,
+                    card_id,
+                    next_review_time,
+                    recent_scores_json
+                )
+                VALUES (?, ?, ?, ?)
             """, (
-                json.dumps(existing_scores),
                 OTHER_USER_ID,
-                self.card.id
+                self.card.id,
+                DUMMY_TIME,
+                json.dumps(existing_scores)
             ))
 
         new_score = 5
@@ -1173,16 +1236,6 @@ class TestRecordUserCardState(unittest.TestCase):
         )
 
     def test_record_user_card_state_rejects_invalid_score(self):
-        with db_lib.get_db() as conn:
-            state_before = tuple(conn.execute("""
-                SELECT *
-                FROM user_card_state
-                WHERE user_id = ? AND card_id = ?
-            """, (
-                OTHER_USER_ID,
-                self.card.id
-            )).fetchone())
-
         for score in (0, 6, db_lib.FAILED_AI_SCORE):
             with self.subTest(score=score):
                 with db_lib.get_db() as conn:
@@ -1196,16 +1249,16 @@ class TestRecordUserCardState(unittest.TestCase):
                         )
 
         with db_lib.get_db() as conn:
-            state_after = tuple(conn.execute("""
+            state = conn.execute("""
                 SELECT *
                 FROM user_card_state
                 WHERE user_id = ? AND card_id = ?
             """, (
                 OTHER_USER_ID,
                 self.card.id
-            )).fetchone())
+            )).fetchone()
 
-        self.assertEqual(state_after, state_before)
+        self.assertIsNone(state)
 
 class TestRecordLlmCall(unittest.TestCase):
     def setUp(self):
@@ -1332,11 +1385,7 @@ class TestLinkLlmCallToReview(unittest.TestCase):
         create_test_user()
 
         self.card = make_dummy_card()
-        db_lib.add_card(
-            self.card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_TIME
-        )
+        db_lib.add_card(self.card)
 
         with db_lib.get_db() as conn:
             cur = conn.cursor()
@@ -1430,14 +1479,9 @@ class TestDeprecateCard(unittest.TestCase):
         self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
         self.db_path_patch.start()
         db_lib.init_db()
-        create_test_user()
 
         self.card = make_dummy_card()
-        db_lib.add_card(
-            self.card,
-            user_id=OTHER_USER_ID,
-            next_review_time=DUMMY_TIME
-        )
+        db_lib.add_card(self.card)
 
     def tearDown(self):
         self.db_path_patch.stop()

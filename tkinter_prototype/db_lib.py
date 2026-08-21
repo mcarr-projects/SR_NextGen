@@ -240,20 +240,47 @@ def init_db() -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_user_card_state_user_next_review ON user_card_state(user_id, next_review_time);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_review_history_user_card_reviewed ON review_history(user_id, card_id, reviewed_at);")  
 
-def add_card(
-    card: Card,
-    user_id: int = DEFAULT_USER_ID,
-    next_review_time: str | None = None
-) -> Card:
+def row_to_card(row: sqlite3.Row) -> Card:
+    return Card(
+        id=row["id"],
+        question=row["question"],
+        answer=row["answer"],
+        length=row["length"],
+        grading_type=row["grading_type"],
+        grading_criteria=row["grading_criteria"],
+        llm_grading_info=row["llm_grading_info"],
+        tags=[tag for tag in row["tags"].split(",") if tag],
+        is_deprecated=bool(row["is_deprecated"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"]
+    )
+
+def row_to_user_card_state(row: sqlite3.Row) -> UserCardState:
+    try:
+        recent_scores = json.loads(row["recent_scores_json"])
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"invalid recent_scores_json for card {row['card_id']}"
+        ) from error
+
+    return UserCardState(
+        user_id=row["user_id"],
+        card_id=row["card_id"],
+        next_review_time=row["next_review_time"],
+        last_reviewed_at=row["last_reviewed_at"],
+        last_performance=row["last_performance"],
+        current_interval=row["current_interval"],
+        repetitions=row["repetitions"],
+        ef=row["ef"],
+        lapse_count=row["lapse_count"],
+        recent_scores=recent_scores
+    )
+
+def add_card(card: Card) -> Card:
     if not isinstance(card, Card):
         raise TypeError("card must be a Card")
 
     card.validate_for_creation()
-
-    if next_review_time is None:
-        next_review_time = utc_now_iso()
-
-    next_review_time = validate_next_review_time(next_review_time)
 
     with get_db() as conn:
         cur = conn.cursor()
@@ -296,15 +323,6 @@ def add_card(
             """, (card_id, tag_id))
 
         cur.execute("""
-            INSERT INTO user_card_state (
-                user_id,
-                card_id,
-                next_review_time
-            )
-            VALUES (?, ?, ?)
-        """, (user_id, card_id, next_review_time))
-
-        cur.execute("""
             SELECT created_at, updated_at
             FROM cards
             WHERE id = ?
@@ -316,10 +334,7 @@ def add_card(
     card.updated_at = timestamp_row["updated_at"]
     return card
 
-def get_cards(
-    tags: list[str],
-    user_id: int = DEFAULT_USER_ID
-) -> list[ReviewItem]:
+def get_cards_by_tags(tags: list[str]) -> list[Card]:
     if not isinstance(tags, list):
         raise TypeError("tags must be a list; use ['ALL'] to fetch all cards")
 
@@ -341,75 +356,68 @@ def get_cards(
 
         if tags == ["ALL"]:
             cur.execute("""
-                SELECT id
-                FROM cards
-                WHERE is_deprecated = 0
-                ORDER BY id ASC
+                SELECT
+                    c.id,
+                    c.question,
+                    c.answer,
+                    c.length,
+                    c.grading_type,
+                    c.grading_criteria,
+                    c.llm_grading_info,
+                    c.is_deprecated,
+                    c.created_at,
+                    c.updated_at,
+                    COALESCE(
+                        GROUP_CONCAT(DISTINCT t.name),
+                        ''
+                    ) AS tags
+                FROM cards c
+                LEFT JOIN card_tags ct
+                    ON ct.card_id = c.id
+                LEFT JOIN tags t
+                    ON t.id = ct.tag_id
+                WHERE c.is_deprecated = 0
+                GROUP BY c.id
+                ORDER BY c.id ASC
             """)
-            card_ids = [row["id"] for row in cur.fetchall()]
         else:
             placeholders = ",".join("?" for _ in tags)
 
             cur.execute(f"""
-                SELECT c.id
+                SELECT
+                    c.id,
+                    c.question,
+                    c.answer,
+                    c.length,
+                    c.grading_type,
+                    c.grading_criteria,
+                    c.llm_grading_info,
+                    c.is_deprecated,
+                    c.created_at,
+                    c.updated_at,
+                    COALESCE(
+                        GROUP_CONCAT(DISTINCT all_tags.name),
+                        ''
+                    ) AS tags
                 FROM cards c
                 JOIN card_tags ct
                     ON ct.card_id = c.id
-                JOIN tags t
-                    ON t.id = ct.tag_id
-                WHERE t.name IN ({placeholders})
-                AND c.is_deprecated = 0
+                JOIN tags selected_tags
+                    ON selected_tags.id = ct.tag_id
+                LEFT JOIN card_tags all_ct
+                    ON all_ct.card_id = c.id
+                LEFT JOIN tags all_tags
+                    ON all_tags.id = all_ct.tag_id
+                WHERE selected_tags.name IN ({placeholders})
+                    AND c.is_deprecated = 0
                 GROUP BY c.id
-                HAVING COUNT(DISTINCT t.name) = ?
+                HAVING COUNT(DISTINCT selected_tags.name) = ?
                 ORDER BY c.id ASC
             """, (*tags, len(tags)))
 
-            card_ids = [row["id"] for row in cur.fetchall()]
+        rows = cur.fetchall()
 
-        if not card_ids:
-            return []
-
-        id_placeholders = ",".join("?" for _ in card_ids)
-
-        cur.execute(f"""
-            SELECT
-                c.id,
-                c.question,
-                c.answer,
-                c.length,
-                c.grading_type,
-                c.grading_criteria,
-                c.llm_grading_info,
-                c.created_at,
-                c.updated_at,
-                c.is_deprecated,
-                ucs.user_id,
-                ucs.next_review_time,
-                ucs.last_reviewed_at,
-                ucs.last_performance,
-                ucs.current_interval,
-                ucs.repetitions,
-                ucs.ef,
-                ucs.lapse_count,
-                ucs.recent_scores_json,
-                COALESCE(
-                    GROUP_CONCAT(DISTINCT t.name),
-                    ''
-                ) AS tags
-            FROM cards c
-            JOIN user_card_state ucs
-                ON ucs.card_id = c.id
-                AND ucs.user_id = ?
-            LEFT JOIN card_tags ct
-                ON ct.card_id = c.id
-            LEFT JOIN tags t
-                ON t.id = ct.tag_id
-            WHERE c.id IN ({id_placeholders})
-            GROUP BY c.id
-            ORDER BY c.id ASC
-        """, (user_id, *card_ids))
-
-        return [row_to_review_item(row) for row in cur.fetchall()]
+    return [row_to_card(row) for row in rows]
 
 def add_deck(deck: Deck) -> Deck:
     if not isinstance(deck, Deck):
@@ -497,48 +505,82 @@ def get_decks(user_id: int | None = None) -> list[Deck]:
         for row in rows
     ]
 
-def row_to_review_item(row: sqlite3.Row) -> ReviewItem:
-    tags = [
-        tag
-        for tag in row["tags"].split(",")
-        if tag
-    ]
+def add_card_to_deck(deck: Deck, card: Card) -> None:
+    if not isinstance(deck, Deck):
+        raise TypeError("deck must be a Deck")
+    if not isinstance(card, Card):
+        raise TypeError("card must be a Card")
+    if deck.id is None or card.id is None:
+        raise ValueError("deck and card must be saved")
 
-    try:
-        recent_scores = json.loads(row["recent_scores_json"])
-    except (TypeError, json.JSONDecodeError) as error:
-        raise ValueError(
-            f"invalid recent_scores_json for card {row['id']}"
-        ) from error
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO deck_cards (deck_id, card_id)
+            VALUES (?, ?)
+        """, (deck.id, card.id))
 
-    card = Card(
-        id=row["id"],
-        question=row["question"],
-        answer=row["answer"],
-        length=row["length"],
-        grading_type=row["grading_type"],
-        grading_criteria=row["grading_criteria"],
-        llm_grading_info=row["llm_grading_info"],
-        tags=tags,
-        is_deprecated=bool(row["is_deprecated"]),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"]
-    )
+def get_deck_cards(deck: Deck) -> list[Card]:
+    if not isinstance(deck, Deck):
+        raise TypeError("deck must be a Deck")
+    if deck.id is None:
+        raise ValueError("deck must be saved")
 
-    state = UserCardState(
-        user_id=row["user_id"],
-        card_id=row["id"],
-        next_review_time=row["next_review_time"],
-        last_reviewed_at=row["last_reviewed_at"],
-        last_performance=row["last_performance"],
-        current_interval=row["current_interval"],
-        repetitions=row["repetitions"],
-        ef=row["ef"],
-        lapse_count=row["lapse_count"],
-        recent_scores=recent_scores
-    )
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                c.id,
+                c.question,
+                c.answer,
+                c.length,
+                c.grading_type,
+                c.grading_criteria,
+                c.llm_grading_info,
+                c.is_deprecated,
+                c.created_at,
+                c.updated_at,
+                COALESCE(
+                    GROUP_CONCAT(DISTINCT t.name),
+                    ''
+                ) AS tags
+            FROM cards c
+            JOIN deck_cards dc
+                ON dc.card_id = c.id
+            LEFT JOIN card_tags ct
+                ON ct.card_id = c.id
+            LEFT JOIN tags t
+                ON t.id = ct.tag_id
+            WHERE dc.deck_id = ?
+                AND c.is_deprecated = 0
+            GROUP BY c.id
+            ORDER BY c.id ASC
+        """, (deck.id,)).fetchall()
 
-    return ReviewItem(card=card, state=state)
+    return [row_to_card(row) for row in rows]
+
+def get_user_card_states(user_id: int = DEFAULT_USER_ID) -> dict[int, UserCardState]:
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT
+                user_id,
+                card_id,
+                next_review_time,
+                last_reviewed_at,
+                last_performance,
+                current_interval,
+                repetitions,
+                ef,
+                lapse_count,
+                recent_scores_json
+            FROM user_card_state
+            WHERE user_id = ?
+        """, (user_id,)).fetchall()
+
+    states = [row_to_user_card_state(row) for row in rows]
+
+    return {
+        state.card_id: state
+        for state in states
+    }
 
 def get_all_tags() -> list[str]:
     with get_db() as conn:
@@ -795,73 +837,6 @@ def deprecate_card(card_id: int) -> None:
             )
             VALUES (?, ?)
         """, (card_id, deprecated_at))
-
-def add_card_to_deck(deck: Deck, card: Card) -> None:
-    if not isinstance(deck, Deck):
-        raise TypeError("deck must be a Deck")
-    if not isinstance(card, Card):
-        raise TypeError("card must be a Card")
-    if deck.id is None or card.id is None:
-        raise ValueError("deck and card must be saved")
-
-    with get_db() as conn:
-        conn.execute("""
-            INSERT INTO deck_cards (deck_id, card_id)
-            VALUES (?, ?)
-        """, (deck.id, card.id))
-
-def get_deck_cards(deck: Deck) -> list[Card]:
-    if not isinstance(deck, Deck):
-        raise TypeError("deck must be a Deck")
-    if deck.id is None:
-        raise ValueError("deck must be saved")
-
-    with get_db() as conn:
-        rows = conn.execute("""
-            SELECT
-                c.id,
-                c.question,
-                c.answer,
-                c.length,
-                c.grading_type,
-                c.grading_criteria,
-                c.llm_grading_info,
-                c.is_deprecated,
-                c.created_at,
-                c.updated_at,
-                COALESCE(
-                    GROUP_CONCAT(DISTINCT t.name),
-                    ''
-                ) AS tags
-            FROM cards c
-            JOIN deck_cards dc
-                ON dc.card_id = c.id
-            LEFT JOIN card_tags ct
-                ON ct.card_id = c.id
-            LEFT JOIN tags t
-                ON t.id = ct.tag_id
-            WHERE dc.deck_id = ?
-                AND c.is_deprecated = 0
-            GROUP BY c.id
-            ORDER BY c.id ASC
-        """, (deck.id,)).fetchall()
-
-    return [
-        Card(
-            id=row["id"],
-            question=row["question"],
-            answer=row["answer"],
-            length=row["length"],
-            grading_type=row["grading_type"],
-            grading_criteria=row["grading_criteria"],
-            llm_grading_info=row["llm_grading_info"],
-            tags=[tag for tag in row["tags"].split(",") if tag],
-            is_deprecated=bool(row["is_deprecated"]),
-            created_at=row["created_at"],
-            updated_at=row["updated_at"]
-        )
-        for row in rows
-    ]
 
 if __name__ == "__main__":
     init_db()
