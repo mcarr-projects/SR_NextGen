@@ -4,10 +4,29 @@ from queue import Empty, Queue
 import threading
 
 from db_lib import (
-    add_card, get_cards, add_deck, get_decks, add_card_to_deck, get_deck_cards,
-    DEFAULT_USER_ID, get_all_tags, utc_now_iso, record_card_review)
-from sr_models import Card, Deck
+    add_card, get_cards_by_tags, add_deck, get_decks, add_card_to_deck,
+    get_deck_cards, get_user_card_states, DEFAULT_USER_ID, get_all_tags,
+    utc_now_iso, record_card_review
+)
+from sr_models import Card, Deck, ReviewItem, UserCardState
 from llm_grading import grade_answer
+
+def build_review_items(cards, states_by_card_id, user_id, now):
+    review_items = []
+
+    for card in cards:
+        state = states_by_card_id.get(card.id)
+
+        if state is None:
+            state = UserCardState(
+                user_id=user_id,
+                card_id=card.id,
+                next_review_time=now
+            )
+
+        review_items.append(ReviewItem(card=card, state=state))
+
+    return review_items
 
 def insert_question(
     question,
@@ -309,7 +328,7 @@ def ai_card_review(to_review):
 def launch_review_menu():
     config_window = tk.Toplevel(root)
     config_window.title("Review Config")
-    config_window.geometry("400x400")
+    config_window.geometry("400x500")
 
     # grading section
     grading_frame = tk.LabelFrame(config_window, text="Grading", padx=10, pady=10)
@@ -317,21 +336,19 @@ def launch_review_menu():
 
     grading_mode = tk.StringVar(value="Manual")
 
-    manual_radio = tk.Radiobutton(
+    tk.Radiobutton(
         grading_frame,
         text="Manual",
         variable=grading_mode,
         value="Manual"
-    )
-    manual_radio.pack(anchor="w")
+    ).pack(anchor="w")
 
-    ai_radio = tk.Radiobutton(
+    tk.Radiobutton(
         grading_frame,
         text="AI",
         variable=grading_mode,
         value="AI"
-    )
-    ai_radio.pack(anchor="w")
+    ).pack(anchor="w")
 
     # number of cards section
     count_frame = tk.LabelFrame(config_window, text="Number of cards", padx=10, pady=10)
@@ -340,15 +357,56 @@ def launch_review_menu():
     card_count_input = tk.Entry(count_frame, width=20)
     card_count_input.pack(anchor="w")
 
-    # subjects section
-    subjects_frame = tk.LabelFrame(config_window, text="Tags", padx=10, pady=10)
-    subjects_frame.pack(fill="x", padx=10, pady=10)
+    # review source section
+    source_frame = tk.LabelFrame(config_window, text="Review Source", padx=10, pady=10)
+    source_frame.pack(fill="x", padx=10, pady=10)
+
+    review_source = tk.StringVar(value="Tags")
 
     available_tags = ["ALL"] + get_all_tags()
     selected_tag = tk.StringVar(value="ALL")
 
-    tag_menu = tk.OptionMenu(subjects_frame, selected_tag, *available_tags)
-    tag_menu.pack(anchor="w")
+    current_decks = get_decks(user_id=DEFAULT_USER_ID)
+    deck_names = [deck.name for deck in current_decks]
+    selected_deck = tk.StringVar(value=deck_names[0] if deck_names else "")
+
+    tag_radio = tk.Radiobutton(
+        source_frame,
+        text="Tags",
+        variable=review_source,
+        value="Tags"
+    )
+    tag_radio.grid(row=0, column=0, sticky="w")
+
+    tag_menu = tk.OptionMenu(source_frame, selected_tag, *available_tags)
+    tag_menu.grid(row=0, column=1, sticky="w", padx=(10, 0))
+
+    deck_radio = tk.Radiobutton(
+        source_frame,
+        text="Deck",
+        variable=review_source,
+        value="Deck"
+    )
+    deck_radio.grid(row=1, column=0, sticky="w", pady=(10, 0))
+
+    if deck_names:
+        deck_menu = tk.OptionMenu(source_frame, selected_deck, *deck_names)
+    else:
+        deck_menu = tk.OptionMenu(source_frame, selected_deck, "")
+
+    deck_menu.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(10, 0))
+
+    def update_source_controls():
+        if review_source.get() == "Tags":
+            tag_menu.config(state="normal")
+            deck_menu.config(state="disabled")
+        else:
+            tag_menu.config(state="disabled")
+            deck_menu.config(state="normal")
+
+    tag_radio.config(command=update_source_controls)
+    deck_radio.config(command=update_source_controls)
+    update_source_controls()
 
     def start_review():
         card_count_text = card_count_input.get().strip()
@@ -366,18 +424,48 @@ def launch_review_menu():
         mode = grading_mode.get()
         review_callback = manual_card_review if mode == "Manual" else ai_card_review
 
-        selected = selected_tag.get()
-        review_tags = ["ALL"] if selected == "ALL" else [selected]
+        if review_source.get() == "Deck":
+            if not current_decks:
+                messagebox.showerror("No decks", "You do not have any decks to review.")
+                return
 
-        review_items = get_cards(review_tags)
+            deck = next(
+                deck for deck in current_decks
+                if deck.name == selected_deck.get()
+            )
+            cards = get_deck_cards(deck)
+        else:
+            selected = selected_tag.get()
+            review_tags = ["ALL"] if selected == "ALL" else [selected]
+            cards = get_cards_by_tags(review_tags)
+
         now = utc_now_iso()
+        states_by_card_id = get_user_card_states(DEFAULT_USER_ID)
 
-        due_items = [review_item for review_item in review_items if review_item.is_due(now)]
-        early_items = [review_item for review_item in review_items if not review_item.is_due(now)]
-        early_items.sort(key=lambda review_item: review_item.state.next_review_time)
+        review_items = build_review_items(
+            cards,
+            states_by_card_id,
+            DEFAULT_USER_ID,
+            now
+        )
+
+        due_items = [
+            review_item for review_item in review_items
+            if review_item.is_due(now)
+        ]
+        early_items = [
+            review_item for review_item in review_items
+            if not review_item.is_due(now)
+        ]
+        early_items.sort(
+            key=lambda review_item: review_item.state.next_review_time
+        )
 
         if not due_items and not early_items:
-            messagebox.showinfo("No questions available", "No questions came up for your selected tags.")
+            messagebox.showinfo(
+                "No questions available",
+                "No questions came up for your selected review source."
+            )
             return
 
         if len(due_items) >= card_count:
@@ -717,10 +805,7 @@ def launch_edit_deck(deck):
     def refresh_cards():
         nonlocal cards_to_add
 
-        all_cards = [
-            review_item.card
-            for review_item in get_cards(["ALL"], user_id=DEFAULT_USER_ID)
-        ]
+        all_cards = get_cards_by_tags(["ALL"])
         used_cards = get_deck_cards(deck)
         used_card_ids = {card.id for card in used_cards}
         cards_to_add = [
