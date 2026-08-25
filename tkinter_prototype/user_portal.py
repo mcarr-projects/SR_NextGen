@@ -6,7 +6,7 @@ import threading
 from db_lib import (
     add_card, get_cards_by_tags, add_deck, get_decks, add_card_to_deck,
     get_deck_cards, get_user_card_states, DEFAULT_USER_ID, get_all_tags,
-    utc_now_iso, record_card_review
+    utc_now_iso, record_card_review, update_card_llm_grading_info
 )
 from sr_models import Card, Deck, ReviewItem, UserCardState
 from llm_grading import grade_answer
@@ -27,6 +27,395 @@ def build_review_items(cards, states_by_card_id, user_id, now):
         review_items.append(ReviewItem(card=card, state=state))
 
     return review_items
+
+def launch_deprecate_card():
+    messagebox.showinfo(
+        "Not Implemented",
+        "Card deprecation will be added next."
+    )
+
+def launch_replace_card():
+    messagebox.showinfo(
+        "Not Implemented",
+        "Card replacement will be added later."
+    )
+
+def launch_manage_cards():
+    manage_window = tk.Toplevel(root)
+    manage_window.title("Manage Cards")
+    manage_window.geometry("400x300")
+
+    button_frame = tk.Frame(manage_window)
+    button_frame.pack(fill="both", expand=True, padx=40, pady=30)
+
+    tk.Button(
+        button_frame,
+        text="Add Cards",
+        command=add_card_launch
+    ).pack(fill="x", pady=5)
+
+    tk.Button(
+        button_frame,
+        text="Deprecate Cards",
+        command=launch_deprecate_card
+    ).pack(fill="x", pady=5)
+
+    tk.Button(
+        button_frame,
+        text="Replace Cards",
+        command=launch_replace_card
+    ).pack(fill="x", pady=5)
+
+    tk.Button(
+        button_frame,
+        text="Update LLM Grading Info",
+        command=launch_update_llm_grading_info
+    ).pack(fill="x", pady=5)
+
+def launch_update_llm_grading_info():
+    update_window = tk.Toplevel(root)
+    update_window.title("Update LLM Grading Info")
+    update_window.geometry("1500x700")
+
+    content_frame = tk.Frame(update_window)
+    content_frame.pack(fill="both", expand=True, padx=10, pady=10)
+    content_frame.grid_rowconfigure(0, weight=1)
+    content_frame.grid_columnconfigure(0, weight=1)
+    content_frame.grid_columnconfigure(1, weight=4)
+    content_frame.grid_columnconfigure(2, weight=2)
+
+    selection_frame = tk.LabelFrame(
+        content_frame,
+        text="Select Card",
+        padx=10,
+        pady=10
+    )
+    selection_frame.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=(0, 5)
+    )
+
+    card_list = tk.Listbox(selection_frame, exportselection=False)
+    card_list.pack(fill="both", expand=True)
+
+    details_frame = tk.LabelFrame(
+        content_frame,
+        text="Current Card",
+        padx=10,
+        pady=10
+    )
+    details_frame.grid(
+        row=0,
+        column=1,
+        sticky="nsew",
+        padx=5
+    )
+
+    qna_frame = tk.Frame(details_frame)
+    qna_frame.pack(fill="both", expand=True)
+
+    question_frame = tk.LabelFrame(qna_frame, text="Question")
+    question_frame.pack(
+        side="left",
+        fill="both",
+        expand=True,
+        padx=(0, 5)
+    )
+    question_frame.grid_rowconfigure(0, weight=1)
+    question_frame.grid_columnconfigure(0, weight=1)
+
+    question_text = tk.Text(
+        question_frame,
+        width=40,
+        height=25,
+        wrap="word",
+        state="disabled"
+    )
+    question_text.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=5,
+        pady=5
+    )
+
+    right_details = tk.Frame(qna_frame)
+    right_details.pack(
+        side="left",
+        fill="both",
+        expand=True,
+        padx=(5, 0)
+    )
+    right_details.grid_rowconfigure(0, weight=2)
+    right_details.grid_rowconfigure(1, weight=1)
+    right_details.grid_rowconfigure(2, weight=1)
+    right_details.grid_columnconfigure(0, weight=1)
+
+    answer_frame = tk.LabelFrame(right_details, text="Answer")
+    answer_frame.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        pady=(0, 5)
+    )
+    answer_frame.grid_rowconfigure(0, weight=1)
+    answer_frame.grid_columnconfigure(0, weight=1)
+
+    answer_text = tk.Text(
+        answer_frame,
+        width=40,
+        height=12,
+        wrap="word",
+        state="disabled"
+    )
+    answer_text.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=5,
+        pady=5
+    )
+
+    criteria_frame = tk.LabelFrame(
+        right_details,
+        text="Grading Criteria"
+    )
+    criteria_frame.grid(
+        row=1,
+        column=0,
+        sticky="nsew",
+        pady=5
+    )
+    criteria_frame.grid_rowconfigure(0, weight=1)
+    criteria_frame.grid_columnconfigure(0, weight=1)
+
+    criteria_text = tk.Text(
+        criteria_frame,
+        width=40,
+        height=6,
+        wrap="word",
+        state="disabled"
+    )
+    criteria_text.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=5,
+        pady=5
+    )
+
+    current_llm_frame = tk.LabelFrame(
+        right_details,
+        text="LLM Grading Info"
+    )
+    current_llm_frame.grid(
+        row=2,
+        column=0,
+        sticky="nsew",
+        pady=(5, 0)
+    )
+    current_llm_frame.grid_rowconfigure(0, weight=1)
+    current_llm_frame.grid_columnconfigure(0, weight=1)
+
+    current_llm_text = tk.Text(
+        current_llm_frame,
+        width=40,
+        height=6,
+        wrap="word",
+        state="disabled"
+    )
+    current_llm_text.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=5,
+        pady=5
+    )
+
+    bottom_frame = tk.Frame(details_frame)
+    bottom_frame.pack(fill="x", pady=(10, 0))
+
+    tk.Label(
+        bottom_frame,
+        text="Tags, comma sep"
+    ).pack(side="left")
+
+    tags_var = tk.StringVar()
+    tags_entry = tk.Entry(
+        bottom_frame,
+        textvariable=tags_var,
+        state="readonly"
+    )
+    tags_entry.pack(
+        side="left",
+        fill="x",
+        expand=True,
+        padx=(5, 25)
+    )
+
+    grading_type = tk.StringVar()
+
+    grading_frame = tk.Frame(bottom_frame)
+    grading_frame.pack(side="left")
+
+    tk.Label(
+        grading_frame,
+        text="Grading:  "
+    ).pack(side="left")
+
+    tk.Radiobutton(
+        grading_frame,
+        text="Scaled",
+        variable=grading_type,
+        value="scaled",
+        state="disabled"
+    ).pack(side="left", padx=5)
+
+    tk.Radiobutton(
+        grading_frame,
+        text="Correct / Incorrect",
+        variable=grading_type,
+        value="binary",
+        state="disabled"
+    ).pack(side="left")
+
+    new_llm_frame = tk.LabelFrame(
+        content_frame,
+        text="New LLM Instructions",
+        padx=10,
+        pady=10
+    )
+    new_llm_frame.grid(
+        row=0,
+        column=2,
+        sticky="nsew",
+        padx=(5, 0)
+    )
+    new_llm_frame.grid_rowconfigure(0, weight=1)
+    new_llm_frame.grid_columnconfigure(0, weight=1)
+
+    new_llm_input = tk.Text(
+        new_llm_frame,
+        width=35,
+        wrap="word"
+    )
+    new_llm_input.grid(
+        row=0,
+        column=0,
+        sticky="nsew",
+        padx=5,
+        pady=(5, 10)
+    )
+
+    current_cards = []
+    selected_card = None
+
+    def set_read_only_text(widget, value):
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", value or "")
+        widget.config(state="disabled")
+
+    def card_label(card):
+        question = " ".join(card.question.split())
+        return f"{card.id}: {question}"
+
+    def display_card(card):
+        nonlocal selected_card
+        selected_card = card
+
+        set_read_only_text(question_text, card.question)
+        set_read_only_text(answer_text, card.answer)
+        set_read_only_text(
+            criteria_text,
+            card.grading_criteria
+        )
+        set_read_only_text(
+            current_llm_text,
+            card.llm_grading_info
+        )
+
+        tags_var.set(", ".join(card.tags))
+        grading_type.set(card.grading_type)
+
+        new_llm_input.delete("1.0", "end")
+        new_llm_input.insert(
+            "1.0",
+            card.llm_grading_info or ""
+        )
+
+    def select_card(event=None):
+        selection = card_list.curselection()
+
+        if selection:
+            display_card(current_cards[selection[0]])
+
+    def update_llm_info():
+        if selected_card is None:
+            messagebox.showerror(
+                "No card selected",
+                "Select a card to update.",
+                parent=update_window
+            )
+            return
+
+        new_info = (
+            new_llm_input.get("1.0", "end-1c").strip()
+            or None
+        )
+
+        try:
+            update_card_llm_grading_info(
+                selected_card.id,
+                new_info
+            )
+        except Exception as error:
+            messagebox.showerror(
+                "Update Failed",
+                str(error),
+                parent=update_window
+            )
+            return
+
+        selected_card.llm_grading_info = new_info
+        set_read_only_text(current_llm_text, new_info)
+
+        messagebox.showinfo(
+            "Card Updated",
+            "LLM grading information updated successfully.",
+            parent=update_window
+        )
+
+    update_button = tk.Button(
+        new_llm_frame,
+        text="Update",
+        command=update_llm_info
+    )
+    update_button.grid(
+        row=1,
+        column=0,
+        pady=(0, 5)
+    )
+
+    card_list.bind("<<ListboxSelect>>", select_card)
+
+    try:
+        current_cards = get_cards_by_tags(["ALL"])
+
+        for card in current_cards:
+            card_list.insert("end", card_label(card))
+
+        if current_cards:
+            card_list.selection_set(0)
+            display_card(current_cards[0])
+    except Exception as error:
+        messagebox.showerror(
+            "Load Failed",
+            str(error),
+            parent=update_window
+        )
 
 def insert_question(
     question,
@@ -860,8 +1249,8 @@ root.geometry("300x100")
 frame = tk.Frame(root)
 frame.pack(expand=True)
 
-add_card_btn = tk.Button(frame, text="Add Question", command=add_card_launch)
-add_card_btn.pack(side="left", padx=5)
+manage_cards_btn = tk.Button(frame,text="Manage Cards",command=launch_manage_cards)
+manage_cards_btn.pack(side="left", padx=5)
 
 review_card_btn = tk.Button(frame, text="Review Questions", command=launch_review_menu)
 review_card_btn.pack(side = "left", padx=5)

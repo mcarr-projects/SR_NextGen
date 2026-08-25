@@ -849,14 +849,14 @@ class TestRecordCardReview(unittest.TestCase):
         llm_call_id = db_lib.record_llm_call(**DUMMY_LLM)
 
         with db_lib.get_db() as conn:
-            state_before = tuple(conn.execute("""
+            state_after = conn.execute("""
                 SELECT *
                 FROM user_card_state
                 WHERE user_id = ? AND card_id = ?
             """, (
                 db_lib.DEFAULT_USER_ID,
                 card.id
-            )).fetchone())
+            )).fetchone()
 
         with patch.object(
             db_lib,
@@ -886,14 +886,14 @@ class TestRecordCardReview(unittest.TestCase):
                 WHERE review_id = ?
             """, (result["review_id"],)).fetchone()
 
-            state_after = tuple(conn.execute("""
+            state_after = conn.execute("""
                 SELECT *
                 FROM user_card_state
                 WHERE user_id = ? AND card_id = ?
             """, (
                 db_lib.DEFAULT_USER_ID,
                 card.id
-            )).fetchone())
+            )).fetchone()
 
         self.assertEqual(
             tuple(history_row),
@@ -907,7 +907,7 @@ class TestRecordCardReview(unittest.TestCase):
             tuple(link_row),
             (result["review_id"], llm_call_id)
         )
-        self.assertEqual(state_after, state_before)
+        self.assertIsNone(state_after)
 
     def test_record_card_review_rejects_non_review_item(self):
         with self.assertRaises(TypeError):
@@ -1576,6 +1576,76 @@ class TestDeprecateCard(unittest.TestCase):
         self.assertEqual(is_deprecated, 0)
         self.assertEqual(deprecation_count, 0)
 
+class TestUpdateCardLlmGradingInfo(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.temp_dir.name) / "test.db"
+        self.db_path_patch = patch.object(db_lib, "DB_PATH", self.db_path)
+        self.db_path_patch.start()
+        db_lib.init_db()
+
+        self.card = make_dummy_card()
+        db_lib.add_card(self.card)
+
+    def tearDown(self):
+        self.db_path_patch.stop()
+        self.temp_dir.cleanup()
+
+    def test_update_card_llm_grading_info_updates_info_and_timestamp(self):
+        updated_info = "Focus especially on explaining the calculation."
+
+        with patch.object(
+            db_lib,
+            "utc_now_iso",
+            return_value=DUMMY_TIME
+        ):
+            db_lib.update_card_llm_grading_info(
+                self.card.id,
+                updated_info
+            )
+
+        with db_lib.get_db() as conn:
+            row = conn.execute("""
+                SELECT llm_grading_info, updated_at
+                FROM cards
+                WHERE id = ?
+            """, (self.card.id,)).fetchone()
+
+        self.assertEqual(
+            tuple(row),
+            (updated_info, DUMMY_TIME)
+        )
+
+    def test_update_card_llm_grading_info_can_clear_info(self):
+        db_lib.update_card_llm_grading_info(
+            self.card.id,
+            None
+        )
+
+        with db_lib.get_db() as conn:
+            llm_grading_info = conn.execute("""
+                SELECT llm_grading_info
+                FROM cards
+                WHERE id = ?
+            """, (self.card.id,)).fetchone()[0]
+
+        self.assertIsNone(llm_grading_info)
+
+    def test_update_card_llm_grading_info_rejects_inactive_card(self):
+        with self.assertRaises(ValueError):
+            db_lib.update_card_llm_grading_info(
+                999999,
+                "New instructions"
+            )
+
+        db_lib.deprecate_card(self.card.id)
+
+        with self.assertRaises(ValueError):
+            db_lib.update_card_llm_grading_info(
+                self.card.id,
+                "New instructions"
+            )
+
 class TestAddDeck(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1755,6 +1825,8 @@ class TestGetDecks(unittest.TestCase):
         )
 
         self.assertEqual(results, [])
+
+
 
 if __name__ == "__main__":
     unittest.main()

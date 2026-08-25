@@ -838,6 +838,26 @@ def deprecate_card(card_id: int) -> None:
             VALUES (?, ?)
         """, (card_id, deprecated_at))
 
+def update_card_llm_grading_info(
+    card_id: int,
+    llm_grading_info: str | None
+) -> None:
+    updated_at = utc_now_iso()
+
+    with get_db() as conn:
+        cur = conn.execute("""
+            UPDATE cards
+            SET llm_grading_info = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND is_deprecated = 0
+        """, (llm_grading_info, updated_at, card_id))
+
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"active card {card_id} does not exist"
+            )
+
 if __name__ == "__main__":
     init_db()
     print(f"Database initialized at {DB_PATH}")
