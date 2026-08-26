@@ -28,6 +28,179 @@ def build_review_items(cards, states_by_card_id, user_id, now):
 
     return review_items
 
+def create_text_panel(parent, title, width, height, editable=True):
+    frame = tk.LabelFrame(parent, text=title)
+    frame.grid_rowconfigure(0, weight=1)
+    frame.grid_columnconfigure(0, weight=1)
+
+    text = tk.Text(
+        frame,
+        width=width,
+        height=height,
+        wrap="word",
+        state="normal" if editable else "disabled"
+    )
+    text.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    return frame, text
+
+def set_text(widget, value):
+    original_state = widget.cget("state")
+    widget.config(state="normal")
+    widget.delete("1.0", "end")
+    widget.insert("1.0", value or "")
+    widget.config(state=original_state)
+
+class CardForm(tk.Frame):
+    def __init__(self, parent, editable=True):
+        super().__init__(parent)
+        self.editable = editable
+
+        qna_frame = tk.Frame(self)
+        qna_frame.pack(side="top", fill="both", expand=True)
+
+        question_frame, self.question_input = create_text_panel(
+            qna_frame, "Question", 50, 25, editable
+        )
+        question_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        right_frame = tk.Frame(qna_frame)
+        right_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        right_frame.grid_rowconfigure(0, weight=2)
+        right_frame.grid_rowconfigure(1, weight=1)
+        right_frame.grid_rowconfigure(2, weight=1)
+        right_frame.grid_columnconfigure(0, weight=1)
+
+        answer_frame, self.answer_input = create_text_panel(
+            right_frame, "Answer", 50, 12, editable
+        )
+        answer_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
+
+        criteria_frame, self.criteria_input = create_text_panel(
+            right_frame, "Grading Criteria", 50, 6, editable
+        )
+        criteria_frame.grid(row=1, column=0, sticky="nsew", pady=5)
+
+        llm_frame, self.llm_info_input = create_text_panel(
+            right_frame, "LLM Grading Info", 50, 6, editable
+        )
+        llm_frame.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
+
+        input_row = tk.Frame(self)
+        input_row.pack(side="bottom", pady=(10, 0))
+
+        tk.Label(input_row, text="Tags, comma sep").pack(side="left")
+
+        self.tags_input = tk.Entry(
+            input_row,
+            width=55,
+            state="normal" if editable else "readonly"
+        )
+        self.tags_input.pack(side="left", padx=(5, 45))
+
+        self.grading_type = tk.StringVar(value="unselected")
+        grading_frame = tk.Frame(input_row)
+        grading_frame.pack(side="left")
+
+        tk.Label(grading_frame, text="Grading:  ").pack(side="left")
+        radio_state = "normal" if editable else "disabled"
+
+        tk.Radiobutton(
+            grading_frame,
+            text="Scaled",
+            variable=self.grading_type,
+            value="scaled",
+            state=radio_state
+        ).pack(side="left", padx=5)
+
+        tk.Radiobutton(
+            grading_frame,
+            text="Correct / Incorrect",
+            variable=self.grading_type,
+            value="binary",
+            state=radio_state
+        ).pack(side="left")
+
+    def get_values(self):
+        return (
+            self.question_input.get("1.0", "end-1c"),
+            self.answer_input.get("1.0", "end-1c"),
+            [tag.strip() for tag in self.tags_input.get().split(",") if tag.strip()],
+            self.grading_type.get(),
+            self.criteria_input.get("1.0", "end-1c"),
+            self.llm_info_input.get("1.0", "end-1c")
+        )
+
+    def load_card(self, card):
+        set_text(self.question_input, card.question)
+        set_text(self.answer_input, card.answer)
+        set_text(self.criteria_input, card.grading_criteria)
+        set_text(self.llm_info_input, card.llm_grading_info)
+
+        self.tags_input.config(state="normal")
+        self.tags_input.delete(0, "end")
+        self.tags_input.insert(0, ", ".join(card.tags))
+        if not self.editable:
+            self.tags_input.config(state="readonly")
+
+        self.grading_type.set(card.grading_type)
+
+    def clear(self):
+        set_text(self.question_input, "")
+        set_text(self.answer_input, "")
+        set_text(self.criteria_input, "")
+        set_text(self.llm_info_input, "")
+
+        self.tags_input.config(state="normal")
+        self.tags_input.delete(0, "end")
+        if not self.editable:
+            self.tags_input.config(state="readonly")
+
+        self.grading_type.set("unselected")
+
+class CardListPanel(tk.LabelFrame):
+    def __init__(self, parent, title):
+        super().__init__(parent, text=title, padx=10, pady=10)
+        self.cards = []
+        self.listbox = tk.Listbox(self, exportselection=False)
+        self.listbox.pack(fill="both", expand=True)
+
+    @staticmethod
+    def card_label(card):
+        return f"{card.id}: {' '.join(card.question.split())}"
+
+    def set_cards(self, cards, selected_card_id=None):
+        self.cards = list(cards)
+        self.listbox.delete(0, "end")
+
+        selected_index = None
+        for index, card in enumerate(self.cards):
+            self.listbox.insert("end", self.card_label(card))
+            if card.id == selected_card_id:
+                selected_index = index
+
+        if selected_index is not None:
+            self.listbox.selection_set(selected_index)
+            self.listbox.see(selected_index)
+
+    def get_selected_card(self):
+        selection = self.listbox.curselection()
+        return self.cards[selection[0]] if selection else None
+
+    def bind_selection(self, callback):
+        self.listbox.bind("<<ListboxSelect>>", callback)
+
+class ReviewSession:
+    def __init__(self, review_items):
+        self.review_items = review_items
+        self.index = 0
+
+    def current_item(self):
+        return self.review_items[self.index]
+
+    def advance(self):
+        self.index += 1
+        return self.index < len(self.review_items)
+
 def launch_deprecate_card():
     messagebox.showinfo(
         "Not Implemented",
@@ -84,21 +257,8 @@ def launch_update_llm_grading_info():
     content_frame.grid_columnconfigure(1, weight=4)
     content_frame.grid_columnconfigure(2, weight=2)
 
-    selection_frame = tk.LabelFrame(
-        content_frame,
-        text="Select Card",
-        padx=10,
-        pady=10
-    )
-    selection_frame.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        padx=(0, 5)
-    )
-
-    card_list = tk.Listbox(selection_frame, exportselection=False)
-    card_list.pack(fill="both", expand=True)
+    card_panel = CardListPanel(content_frame, "Select Card")
+    card_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
     details_frame = tk.LabelFrame(
         content_frame,
@@ -113,173 +273,8 @@ def launch_update_llm_grading_info():
         padx=5
     )
 
-    qna_frame = tk.Frame(details_frame)
-    qna_frame.pack(fill="both", expand=True)
-
-    question_frame = tk.LabelFrame(qna_frame, text="Question")
-    question_frame.pack(
-        side="left",
-        fill="both",
-        expand=True,
-        padx=(0, 5)
-    )
-    question_frame.grid_rowconfigure(0, weight=1)
-    question_frame.grid_columnconfigure(0, weight=1)
-
-    question_text = tk.Text(
-        question_frame,
-        width=40,
-        height=25,
-        wrap="word",
-        state="disabled"
-    )
-    question_text.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        padx=5,
-        pady=5
-    )
-
-    right_details = tk.Frame(qna_frame)
-    right_details.pack(
-        side="left",
-        fill="both",
-        expand=True,
-        padx=(5, 0)
-    )
-    right_details.grid_rowconfigure(0, weight=2)
-    right_details.grid_rowconfigure(1, weight=1)
-    right_details.grid_rowconfigure(2, weight=1)
-    right_details.grid_columnconfigure(0, weight=1)
-
-    answer_frame = tk.LabelFrame(right_details, text="Answer")
-    answer_frame.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        pady=(0, 5)
-    )
-    answer_frame.grid_rowconfigure(0, weight=1)
-    answer_frame.grid_columnconfigure(0, weight=1)
-
-    answer_text = tk.Text(
-        answer_frame,
-        width=40,
-        height=12,
-        wrap="word",
-        state="disabled"
-    )
-    answer_text.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        padx=5,
-        pady=5
-    )
-
-    criteria_frame = tk.LabelFrame(
-        right_details,
-        text="Grading Criteria"
-    )
-    criteria_frame.grid(
-        row=1,
-        column=0,
-        sticky="nsew",
-        pady=5
-    )
-    criteria_frame.grid_rowconfigure(0, weight=1)
-    criteria_frame.grid_columnconfigure(0, weight=1)
-
-    criteria_text = tk.Text(
-        criteria_frame,
-        width=40,
-        height=6,
-        wrap="word",
-        state="disabled"
-    )
-    criteria_text.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        padx=5,
-        pady=5
-    )
-
-    current_llm_frame = tk.LabelFrame(
-        right_details,
-        text="LLM Grading Info"
-    )
-    current_llm_frame.grid(
-        row=2,
-        column=0,
-        sticky="nsew",
-        pady=(5, 0)
-    )
-    current_llm_frame.grid_rowconfigure(0, weight=1)
-    current_llm_frame.grid_columnconfigure(0, weight=1)
-
-    current_llm_text = tk.Text(
-        current_llm_frame,
-        width=40,
-        height=6,
-        wrap="word",
-        state="disabled"
-    )
-    current_llm_text.grid(
-        row=0,
-        column=0,
-        sticky="nsew",
-        padx=5,
-        pady=5
-    )
-
-    bottom_frame = tk.Frame(details_frame)
-    bottom_frame.pack(fill="x", pady=(10, 0))
-
-    tk.Label(
-        bottom_frame,
-        text="Tags, comma sep"
-    ).pack(side="left")
-
-    tags_var = tk.StringVar()
-    tags_entry = tk.Entry(
-        bottom_frame,
-        textvariable=tags_var,
-        state="readonly"
-    )
-    tags_entry.pack(
-        side="left",
-        fill="x",
-        expand=True,
-        padx=(5, 25)
-    )
-
-    grading_type = tk.StringVar()
-
-    grading_frame = tk.Frame(bottom_frame)
-    grading_frame.pack(side="left")
-
-    tk.Label(
-        grading_frame,
-        text="Grading:  "
-    ).pack(side="left")
-
-    tk.Radiobutton(
-        grading_frame,
-        text="Scaled",
-        variable=grading_type,
-        value="scaled",
-        state="disabled"
-    ).pack(side="left", padx=5)
-
-    tk.Radiobutton(
-        grading_frame,
-        text="Correct / Incorrect",
-        variable=grading_type,
-        value="binary",
-        state="disabled"
-    ).pack(side="left")
+    current_card_form = CardForm(details_frame, editable=False)
+    current_card_form.pack(fill="both", expand=True)
 
     new_llm_frame = tk.LabelFrame(
         content_frame,
@@ -309,36 +304,12 @@ def launch_update_llm_grading_info():
         pady=(5, 10)
     )
 
-    current_cards = []
     selected_card = None
-
-    def set_read_only_text(widget, value):
-        widget.config(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", value or "")
-        widget.config(state="disabled")
-
-    def card_label(card):
-        question = " ".join(card.question.split())
-        return f"{card.id}: {question}"
 
     def display_card(card):
         nonlocal selected_card
         selected_card = card
-
-        set_read_only_text(question_text, card.question)
-        set_read_only_text(answer_text, card.answer)
-        set_read_only_text(
-            criteria_text,
-            card.grading_criteria
-        )
-        set_read_only_text(
-            current_llm_text,
-            card.llm_grading_info
-        )
-
-        tags_var.set(", ".join(card.tags))
-        grading_type.set(card.grading_type)
+        current_card_form.load_card(card)
 
         new_llm_input.delete("1.0", "end")
         new_llm_input.insert(
@@ -347,10 +318,9 @@ def launch_update_llm_grading_info():
         )
 
     def select_card(event=None):
-        selection = card_list.curselection()
-
-        if selection:
-            display_card(current_cards[selection[0]])
+        card = card_panel.get_selected_card()
+        if card:
+            display_card(card)
 
     def update_llm_info():
         if selected_card is None:
@@ -380,7 +350,7 @@ def launch_update_llm_grading_info():
             return
 
         selected_card.llm_grading_info = new_info
-        set_read_only_text(current_llm_text, new_info)
+        current_card_form.load_card(selected_card)
 
         messagebox.showinfo(
             "Card Updated",
@@ -399,16 +369,14 @@ def launch_update_llm_grading_info():
         pady=(0, 5)
     )
 
-    card_list.bind("<<ListboxSelect>>", select_card)
+    card_panel.bind_selection(select_card)
 
     try:
         current_cards = get_cards_by_tags(["ALL"])
-
-        for card in current_cards:
-            card_list.insert("end", card_label(card))
+        card_panel.set_cards(current_cards)
 
         if current_cards:
-            card_list.selection_set(0)
+            card_panel.listbox.selection_set(0)
             display_card(current_cards[0])
     except Exception as error:
         messagebox.showerror(
@@ -451,97 +419,15 @@ def add_card_launch():
     add_window.title("Add Question")
     add_window.geometry("1100x650")
 
-    qna_frame = tk.Frame(add_window)
-    qna_frame.pack(side="top", fill="both", expand=True, padx=10, pady=10)
-
-    q_frame = tk.LabelFrame(qna_frame, text="Question")
-    q_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
-    q_frame.grid_rowconfigure(0, weight=1)
-    q_frame.grid_columnconfigure(0, weight=1)
-
-    q_input = tk.Text(q_frame, width=50, height=25, wrap="word")
-    q_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-
-    right_frame = tk.Frame(qna_frame)
-    right_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
-    right_frame.grid_rowconfigure(0, weight=2)
-    right_frame.grid_rowconfigure(1, weight=1)
-    right_frame.grid_rowconfigure(2, weight=1)
-    right_frame.grid_columnconfigure(0, weight=1)
-
-    answer_frame = tk.LabelFrame(right_frame, text="Answer")
-    answer_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
-    answer_frame.grid_rowconfigure(0, weight=1)
-    answer_frame.grid_columnconfigure(0, weight=1)
-
-    a_input = tk.Text(answer_frame, width=50, height=12, wrap="word")
-    a_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-
-    criteria_frame = tk.LabelFrame(right_frame, text="Grading Criteria")
-    criteria_frame.grid(row=1, column=0, sticky="nsew", pady=5)
-    criteria_frame.grid_rowconfigure(0, weight=1)
-    criteria_frame.grid_columnconfigure(0, weight=1)
-
-    criteria_input = tk.Text(criteria_frame, width=50, height=6, wrap="word")
-    criteria_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-
-    llm_frame = tk.LabelFrame(right_frame, text="LLM Grading Info")
-    llm_frame.grid(row=2, column=0, sticky="nsew", pady=(5, 0))
-    llm_frame.grid_rowconfigure(0, weight=1)
-    llm_frame.grid_columnconfigure(0, weight=1)
-
-    llm_info_input = tk.Text(llm_frame, width=50, height=6, wrap="word")
-    llm_info_input.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+    card_form = CardForm(add_window)
+    card_form.pack(side="top", fill="both", expand=True, padx=10, pady=(10, 0))
 
     bottom_frame = tk.Frame(add_window)
     bottom_frame.pack(side="bottom", pady=10)
 
-    input_row = tk.Frame(bottom_frame)
-    input_row.pack(side="top", pady=(0, 10))
-
-    tag_label = tk.Label(input_row, text="Tags, comma sep")
-    tag_label.pack(side="left")
-
-    tags_input = tk.Entry(input_row, width=55)
-    tags_input.pack(side="left", padx=(5, 45))
-
-    grading_type = tk.StringVar(value="unselected")
-
-    grading_frame = tk.Frame(input_row)
-    grading_frame.pack(side="left")
-
-    tk.Label(grading_frame, text="Grading:  ").pack(side="left", padx=(0, 0))
-
-    scaled_radio = tk.Radiobutton(
-        grading_frame,
-        text="Scaled",
-        variable=grading_type,
-        value="scaled"
-    )
-    scaled_radio.pack(side="left", padx=(5, 5))
-
-    binary_radio = tk.Radiobutton(
-        grading_frame,
-        text="Correct / Incorrect",
-        variable=grading_type,
-        value="binary"
-    )
-    binary_radio.pack(side="left")
-
     def add_handler():
-        q_text = q_input.get("1.0", "end-1c")
-        a_text = a_input.get("1.0", "end-1c")
-        criteria_text = criteria_input.get("1.0", "end-1c")
-        llm_info_text = llm_info_input.get("1.0", "end-1c")
-        tag_text = [t.strip() for t in tags_input.get().split(",") if t.strip()]
-
-        if insert_question(q_text, a_text, tag_text, grading_type.get(), criteria_text, llm_info_text):
-            q_input.delete("1.0", "end")
-            a_input.delete("1.0", "end")
-            criteria_input.delete("1.0", "end")
-            llm_info_input.delete("1.0", "end")
-            tags_input.delete(0, "end")
-            grading_type.set("unselected")
+        if insert_question(*card_form.get_values()):
+            card_form.clear()
 
     add_button = tk.Button(bottom_frame, text="Add Question", command=add_handler)
     add_button.pack(side="top")
@@ -560,7 +446,7 @@ def ai_card_review(to_review):
 
     q_frame = tk.LabelFrame(qna_frame, text="Question")
     q_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
-    q_input = tk.Text(q_frame, width=60, height=30, wrap="word")
+    q_input = tk.Text(q_frame, width=60, height=30, wrap="word", state="disabled")
     q_input.pack(fill="both", expand=True, padx=5, pady=5)
 
     right_frame = tk.Frame(qna_frame)
@@ -579,22 +465,30 @@ def ai_card_review(to_review):
 
     comparison_frame = tk.LabelFrame(grader_frame, text="Answer Comparison")
     comparison_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 5))
-    comparison_input = tk.Text(comparison_frame, width=60, height=14, wrap="word")
+    comparison_input = tk.Text(
+        comparison_frame, width=60, height=14, wrap="word", state="disabled"
+    )
     comparison_input.pack(fill="both", expand=True, padx=5, pady=5)
 
     criteria_frame = tk.LabelFrame(grader_frame, text="Grading Criteria")
     criteria_frame.grid(row=1, column=0, sticky="nsew", pady=5)
-    criteria_input = tk.Text(criteria_frame, width=60, height=5, wrap="word")
+    criteria_input = tk.Text(
+        criteria_frame, width=60, height=5, wrap="word", state="disabled"
+    )
     criteria_input.pack(fill="both", expand=True, padx=5, pady=5)
 
     llm_frame = tk.LabelFrame(grader_frame, text="LLM Grading Info")
     llm_frame.grid(row=2, column=0, sticky="nsew", pady=5)
-    llm_input = tk.Text(llm_frame, width=60, height=5, wrap="word")
+    llm_input = tk.Text(
+        llm_frame, width=60, height=5, wrap="word", state="disabled"
+    )
     llm_input.pack(fill="both", expand=True, padx=5, pady=5)
 
     feedback_frame = tk.LabelFrame(grader_frame, text="AI Feedback")
     feedback_frame.grid(row=3, column=0, sticky="nsew", pady=(5, 0))
-    feedback_input = tk.Text(feedback_frame, width=60, height=8, wrap="word")
+    feedback_input = tk.Text(
+        feedback_frame, width=60, height=8, wrap="word", state="disabled"
+    )
     feedback_input.pack(fill="both", expand=True, padx=5, pady=5)
 
     bottom_frame = tk.Frame(review_window)
@@ -602,22 +496,13 @@ def ai_card_review(to_review):
     student_controls = tk.Frame(bottom_frame)
     grader_controls = tk.Frame(bottom_frame)
 
-    curr_index = tk.IntVar(value=0)
+    session = ReviewSession(to_review)
     saved_user_answer = tk.StringVar(value="")
     grade_result = {}
     result_queue = Queue()
 
-    def current_item():
-        return to_review[curr_index.get()]
-
-    def set_readonly_text(widget, text):
-        widget.config(state="normal")
-        widget.delete("1.0", "end")
-        widget.insert("1.0", text)
-        widget.config(state="disabled")
-
     def show_question():
-        set_readonly_text(q_input, current_item().card.question)
+        set_text(q_input, session.current_item().card.question)
         student_answer_input.delete("1.0", "end")
         saved_user_answer.set("")
         grade_result.clear()
@@ -629,16 +514,16 @@ def ai_card_review(to_review):
         student_answer_input.focus_set()
 
     def finish_grading(result):
-        card = current_item().card
+        card = session.current_item().card
         grade_result.update(result)
 
         comparison = f"Your Answer:\n{saved_user_answer.get()}\n\nSuggested Answer:\n{card.answer}"
-        set_readonly_text(comparison_input, comparison)
-        set_readonly_text(criteria_input, card.grading_criteria or "No grading criteria provided.")
-        set_readonly_text(llm_input, card.llm_grading_info or "No additional LLM grading information provided.")
+        set_text(comparison_input, comparison)
+        set_text(criteria_input, card.grading_criteria or "No grading criteria provided.")
+        set_text(llm_input, card.llm_grading_info or "No additional LLM grading information provided.")
 
         score_text = "Manual grading required" if result["requires_manual_grading"] else f"Score: {result['score']}"
-        set_readonly_text(feedback_input, f"{score_text}\n\n{result['feedback']}")
+        set_text(feedback_input, f"{score_text}\n\n{result['feedback']}")
 
         student_frame.pack_forget()
         student_controls.pack_forget()
@@ -661,7 +546,7 @@ def ai_card_review(to_review):
         finish_grading(result)
 
     def submit_answer():
-        review_item = current_item()
+        review_item = session.current_item()
         user_answer = student_answer_input.get("1.0", "end-1c").strip()
         saved_user_answer.set(user_answer)
         submit_answer_btn.config(text="Grading...", state="disabled")
@@ -680,7 +565,7 @@ def ai_card_review(to_review):
 
         try:
             record_card_review(
-                review_item=current_item(),
+                review_item=session.current_item(),
                 score=grade_result["score"],
                 grading_mode="ai",
                 user_answer=saved_user_answer.get(),
@@ -692,13 +577,11 @@ def ai_card_review(to_review):
             messagebox.showerror("Review not saved", str(error))
             return
 
-        next_index = curr_index.get() + 1
-        if next_index >= len(to_review):
+        if not session.advance():
             messagebox.showinfo("Done", "All cards reviewed!")
             review_window.destroy()
             return
 
-        curr_index.set(next_index)
         show_question()
 
     submit_answer_btn = tk.Button(student_controls, text="Submit Answer", command=submit_answer)
@@ -936,10 +819,8 @@ def manual_card_review(to_review):
     q_frame = tk.Frame(qna_frame)
     q_frame.pack(side="left", fill="both", expand=True)
 
-    q_label = tk.Label(q_frame, text="Question")
-    q_label.pack(pady=(0, 5))
-
-    q_input = tk.Text(q_frame, width=70, height=30, wrap="word")
+    tk.Label(q_frame, text="Question").pack(pady=(0, 5))
+    q_input = tk.Text(q_frame, width=70, height=30, wrap="word", state="disabled")
     q_input.pack(padx=5, pady=3, fill="both", expand=True)
 
     a_frame = tk.Frame(qna_frame)
@@ -954,25 +835,20 @@ def manual_card_review(to_review):
     bottom_frame = tk.Frame(review_window)
     bottom_frame.pack(side="bottom", pady=10)
 
-    curr_index = tk.IntVar(value=0)
+    session = ReviewSession(to_review)
     answer_shown = tk.BooleanVar(value=False)
     selected_grade = tk.IntVar(value=0)
     saved_user_answer = tk.StringVar(value="")
 
     def show_question():
-        review_item = to_review[curr_index.get()]
         selected_grade.set(0)
         answer_shown.set(False)
         saved_user_answer.set("")
-
-        q_input.config(state="normal")
-        q_input.delete("1.0", "end")
-        q_input.insert("1.0", review_item.card.question)
-        q_input.config(state="disabled")
-
+        set_text(q_input, session.current_item().card.question)
         a_label.config(text="Your Answer")
         a_input.config(state="normal")
         a_input.delete("1.0", "end")
+        a_input.focus_set()
 
         show_ans_btn.config(state="normal")
         submit_grade_btn.config(state="disabled")
@@ -984,17 +860,14 @@ def manual_card_review(to_review):
         if answer_shown.get():
             return
 
-        review_item = to_review[curr_index.get()]
+        review_item = session.current_item()
         user_answer = a_input.get("1.0", "end-1c").strip()
         saved_user_answer.set(user_answer)
 
+        comparison = f"Your Answer:\n{user_answer}\n\nSuggested Answer:\n{review_item.card.answer}\n\nSelect a grade below."
         a_label.config(text="Answer Comparison")
-
         a_input.config(state="normal")
-        a_input.delete("1.0", "end")
-        a_input.insert("1.0", f"Your Answer:\n{user_answer}\n\n")
-        a_input.insert("end", f"Suggested Answer:\n{review_item.card.answer}\n\n")
-        a_input.insert("end", "Select a grade below.")
+        set_text(a_input, comparison)
         a_input.config(state="disabled")
 
         answer_shown.set(True)
@@ -1018,7 +891,7 @@ def manual_card_review(to_review):
             messagebox.showerror("Missing grade", "Select a grade before continuing.")
             return
 
-        review_item = to_review[curr_index.get()]
+        review_item = session.current_item()
         submit_grade_btn.config(state="disabled")
 
         try:
@@ -1037,14 +910,11 @@ def manual_card_review(to_review):
             messagebox.showerror("Review not saved", str(error))
             return
 
-        next_index = curr_index.get() + 1
-
-        if next_index >= len(to_review):
+        if not session.advance():
             messagebox.showinfo("Done", "All cards reviewed!")
             review_window.destroy()
             return
 
-        curr_index.set(next_index)
         show_question()
 
     show_ans_btn = tk.Button(bottom_frame, text="Show Answer", command=reveal_answer)
@@ -1171,29 +1041,16 @@ def launch_edit_deck(deck):
     lists_frame.grid_columnconfigure(0, weight=1)
     lists_frame.grid_columnconfigure(2, weight=1)
 
-    used_frame = tk.LabelFrame(lists_frame, text="Cards Used", padx=10, pady=10)
-    used_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
+    used_panel = CardListPanel(lists_frame, "Cards Used")
+    used_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 15))
 
     separator = tk.Frame(lists_frame, width=2, bg="gray")
     separator.grid(row=0, column=1, sticky="ns")
 
-    available_frame = tk.LabelFrame(lists_frame, text="Cards to Add", padx=10, pady=10)
-    available_frame.grid(row=0, column=2, sticky="nsew", padx=(15, 0))
-
-    used_card_list = tk.Listbox(used_frame)
-    used_card_list.pack(fill="both", expand=True)
-
-    available_card_list = tk.Listbox(available_frame)
-    available_card_list.pack(fill="both", expand=True)
-
-    cards_to_add = []
-
-    def card_label(card):
-        return f"{card.id}: {' '.join(card.question.split())}"
+    available_panel = CardListPanel(lists_frame, "Cards to Add")
+    available_panel.grid(row=0, column=2, sticky="nsew", padx=(15, 0))
 
     def refresh_cards():
-        nonlocal cards_to_add
-
         all_cards = get_cards_by_tags(["ALL"])
         used_cards = get_deck_cards(deck)
         used_card_ids = {card.id for card in used_cards}
@@ -1201,28 +1058,18 @@ def launch_edit_deck(deck):
             card for card in all_cards
             if card.id not in used_card_ids
         ]
-
-        used_card_list.delete(0, "end")
-        available_card_list.delete(0, "end")
-
-        for card in used_cards:
-            used_card_list.insert("end", card_label(card))
-
-        for card in cards_to_add:
-            available_card_list.insert("end", card_label(card))
+        used_panel.set_cards(used_cards)
+        available_panel.set_cards(cards_to_add)
 
     def add_selected_card():
-        selection = available_card_list.curselection()
-
-        if not selection:
+        card = available_panel.get_selected_card()
+        if card is None:
             messagebox.showerror(
                 "No card selected",
                 "Select a card to add.",
                 parent=edit_window
             )
             return
-
-        card = cards_to_add[selection[0]]
 
         try:
             add_card_to_deck(deck, card)
@@ -1231,7 +1078,7 @@ def launch_edit_deck(deck):
             messagebox.showerror("Add failed", str(error), parent=edit_window)
 
     add_button = tk.Button(
-        available_frame,
+        available_panel,
         text="Add Selected Card",
         command=add_selected_card
     )
