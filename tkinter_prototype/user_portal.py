@@ -5,8 +5,8 @@ import threading
 
 from db_lib import (
     add_card, get_cards_by_tags, add_deck, get_decks, add_card_to_deck,
-    get_deck_cards, get_user_card_states, DEFAULT_USER_ID, get_all_tags,
-    utc_now_iso, record_card_review, update_card_llm_grading_info
+    get_deck_cards, deprecate_card, get_user_card_states, DEFAULT_USER_ID, get_all_tags,
+    utc_now_iso, record_card_review, update_card_llm_grading_info,
 )
 from sr_models import Card, Deck, ReviewItem, UserCardState
 from llm_grading import grade_answer
@@ -158,29 +158,99 @@ class CardForm(tk.Frame):
         self.grading_type.set("unselected")
 
 class CardListPanel(tk.LabelFrame):
-    def __init__(self, parent, title):
+    def __init__(self, parent, title, filterable=False):
         super().__init__(parent, text=title, padx=10, pady=10)
+        self.all_cards = []
         self.cards = []
+
         self.listbox = tk.Listbox(self, exportselection=False)
         self.listbox.pack(fill="both", expand=True)
+
+        self.filter_input = None
+
+        if filterable:
+            filter_frame = tk.Frame(self)
+            filter_frame.pack(fill="x", pady=(10, 0))
+
+            tk.Label(
+                filter_frame,
+                text="Filter by tag:"
+            ).pack(anchor="w")
+
+            filter_row = tk.Frame(filter_frame)
+            filter_row.pack(fill="x", pady=(3, 0))
+
+            self.filter_input = tk.Entry(filter_row)
+            self.filter_input.pack(
+                side="left",
+                fill="x",
+                expand=True
+            )
+
+            tk.Button(
+                filter_row,
+                text="Filter",
+                command=self.filter_cards
+            ).pack(side="left", padx=(5, 0))
+
+            self.filter_input.bind(
+                "<Return>",
+                lambda event: self.filter_cards()
+            )
 
     @staticmethod
     def card_label(card):
         return f"{card.id}: {' '.join(card.question.split())}"
 
-    def set_cards(self, cards, selected_card_id=None):
-        self.cards = list(cards)
+    def matching_cards(self):
+        if self.filter_input is None:
+            return self.all_cards
+
+        target = self.filter_input.get().strip().casefold()
+
+        if not target:
+            return self.all_cards
+
+        return [
+            card for card in self.all_cards
+            if any(
+                target in tag.casefold()
+                for tag in card.tags
+            )
+        ]
+
+    def display_cards(self, selected_card_id=None, select_first=False):
+        self.cards = self.matching_cards()
         self.listbox.delete(0, "end")
 
         selected_index = None
+
         for index, card in enumerate(self.cards):
             self.listbox.insert("end", self.card_label(card))
+
             if card.id == selected_card_id:
                 selected_index = index
+
+        if selected_index is None and select_first and self.cards:
+            selected_index = 0
 
         if selected_index is not None:
             self.listbox.selection_set(selected_index)
             self.listbox.see(selected_index)
+
+    def set_cards(self, cards, selected_card_id=None):
+        self.all_cards = list(cards)
+        self.display_cards(selected_card_id)
+
+    def filter_cards(self):
+        selected_card = self.get_selected_card()
+        selected_card_id = selected_card.id if selected_card else None
+
+        self.display_cards(
+            selected_card_id=selected_card_id,
+            select_first=True
+        )
+        self.listbox.event_generate("<<ListboxSelect>>")
 
     def get_selected_card(self):
         selection = self.listbox.curselection()
@@ -188,6 +258,76 @@ class CardListPanel(tk.LabelFrame):
 
     def bind_selection(self, callback):
         self.listbox.bind("<<ListboxSelect>>", callback)
+
+class CardBrowser(tk.Frame):
+    def __init__(self, parent, details_title="Selected Card"):
+        super().__init__(parent)
+        self.selected_card = None
+        self.selection_callbacks = []
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=4)
+
+        self.card_panel = CardListPanel(
+            self,
+            "Select Card",
+            filterable=True
+        )
+        self.card_panel.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 5)
+        )
+
+        details_frame = tk.LabelFrame(
+            self,
+            text=details_title,
+            padx=10,
+            pady=10
+        )
+        details_frame.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(5, 0)
+        )
+
+        self.card_form = CardForm(
+            details_frame,
+            editable=False
+        )
+        self.card_form.pack(fill="both", expand=True)
+
+        self.card_panel.bind_selection(self._selection_changed)
+
+    def refresh_display(self):
+        if self.selected_card:
+            self.card_form.load_card(self.selected_card)
+        else:
+            self.card_form.clear()
+
+    def _selection_changed(self, event=None):
+        self.selected_card = self.card_panel.get_selected_card()
+        self.refresh_display()
+
+        for callback in self.selection_callbacks:
+            callback(self.selected_card)
+
+    def set_cards(self, cards, selected_card_id=None):
+        self.card_panel.set_cards(cards, selected_card_id)
+
+        if not self.card_panel.get_selected_card() and self.card_panel.cards:
+            self.card_panel.listbox.selection_set(0)
+
+        self._selection_changed()
+
+    def get_selected_card(self):
+        return self.selected_card
+
+    def bind_selection(self, callback):
+        self.selection_callbacks.append(callback)
 
 class ReviewSession:
     def __init__(self, review_items):
@@ -202,10 +342,74 @@ class ReviewSession:
         return self.index < len(self.review_items)
 
 def launch_deprecate_card():
-    messagebox.showinfo(
-        "Not Implemented",
-        "Card deprecation will be added next."
+    deprecate_window = tk.Toplevel(root)
+    deprecate_window.title("Deprecate Cards")
+    deprecate_window.geometry("1250x700")
+
+    browser = CardBrowser(
+        deprecate_window,
+        details_title="Card to Deprecate"
     )
+    browser.pack(
+        fill="both",
+        expand=True,
+        padx=10,
+        pady=(10, 5)
+    )
+
+    def load_cards():
+        try:
+            browser.set_cards(get_cards_by_tags(["ALL"]))
+        except Exception as error:
+            messagebox.showerror(
+                "Load Failed",
+                str(error),
+                parent=deprecate_window
+            )
+
+    def deprecate_selected_card():
+        card = browser.get_selected_card()
+
+        if card is None:
+            messagebox.showerror(
+                "No card selected",
+                "Select a card to deprecate.",
+                parent=deprecate_window
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Deprecate Card",
+            "Deprecate this card? It will no longer appear in reviews or "
+            "active card lists.",
+            parent=deprecate_window
+        ):
+            return
+
+        try:
+            deprecate_card(card.id)
+            browser.set_cards(get_cards_by_tags(["ALL"]))
+        except Exception as error:
+            messagebox.showerror(
+                "Deprecation Failed",
+                str(error),
+                parent=deprecate_window
+            )
+            return
+
+        messagebox.showinfo(
+            "Card Deprecated",
+            "Card deprecated successfully.",
+            parent=deprecate_window
+        )
+
+    tk.Button(
+        deprecate_window,
+        text="Deprecate Card",
+        command=deprecate_selected_card
+    ).pack(pady=(5, 10))
+
+    load_cards()
 
 def launch_replace_card():
     messagebox.showinfo(
@@ -224,7 +428,7 @@ def launch_manage_cards():
     tk.Button(
         button_frame,
         text="Add Cards",
-        command=add_card_launch
+        command=launch_add_card
     ).pack(fill="x", pady=5)
 
     tk.Button(
@@ -253,28 +457,19 @@ def launch_update_llm_grading_info():
     content_frame = tk.Frame(update_window)
     content_frame.pack(fill="both", expand=True, padx=10, pady=10)
     content_frame.grid_rowconfigure(0, weight=1)
-    content_frame.grid_columnconfigure(0, weight=1)
-    content_frame.grid_columnconfigure(1, weight=4)
-    content_frame.grid_columnconfigure(2, weight=2)
+    content_frame.grid_columnconfigure(0, weight=5)
+    content_frame.grid_columnconfigure(1, weight=2)
 
-    card_panel = CardListPanel(content_frame, "Select Card")
-    card_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-
-    details_frame = tk.LabelFrame(
+    browser = CardBrowser(
         content_frame,
-        text="Current Card",
-        padx=10,
-        pady=10
+        details_title="Current Card"
     )
-    details_frame.grid(
+    browser.grid(
         row=0,
-        column=1,
+        column=0,
         sticky="nsew",
-        padx=5
+        padx=(0, 5)
     )
-
-    current_card_form = CardForm(details_frame, editable=False)
-    current_card_form.pack(fill="both", expand=True)
 
     new_llm_frame = tk.LabelFrame(
         content_frame,
@@ -284,7 +479,7 @@ def launch_update_llm_grading_info():
     )
     new_llm_frame.grid(
         row=0,
-        column=2,
+        column=1,
         sticky="nsew",
         padx=(5, 0)
     )
@@ -304,26 +499,16 @@ def launch_update_llm_grading_info():
         pady=(5, 10)
     )
 
-    selected_card = None
-
-    def display_card(card):
-        nonlocal selected_card
-        selected_card = card
-        current_card_form.load_card(card)
-
-        new_llm_input.delete("1.0", "end")
-        new_llm_input.insert(
-            "1.0",
-            card.llm_grading_info or ""
+    def display_llm_info(card):
+        set_text(
+            new_llm_input,
+            card.llm_grading_info if card else ""
         )
 
-    def select_card(event=None):
-        card = card_panel.get_selected_card()
-        if card:
-            display_card(card)
-
     def update_llm_info():
-        if selected_card is None:
+        card = browser.get_selected_card()
+
+        if card is None:
             messagebox.showerror(
                 "No card selected",
                 "Select a card to update.",
@@ -337,10 +522,7 @@ def launch_update_llm_grading_info():
         )
 
         try:
-            update_card_llm_grading_info(
-                selected_card.id,
-                new_info
-            )
+            update_card_llm_grading_info(card.id, new_info)
         except Exception as error:
             messagebox.showerror(
                 "Update Failed",
@@ -349,8 +531,8 @@ def launch_update_llm_grading_info():
             )
             return
 
-        selected_card.llm_grading_info = new_info
-        current_card_form.load_card(selected_card)
+        card.llm_grading_info = new_info
+        browser.refresh_display()
 
         messagebox.showinfo(
             "Card Updated",
@@ -358,26 +540,20 @@ def launch_update_llm_grading_info():
             parent=update_window
         )
 
-    update_button = tk.Button(
+    tk.Button(
         new_llm_frame,
         text="Update",
         command=update_llm_info
-    )
-    update_button.grid(
+    ).grid(
         row=1,
         column=0,
         pady=(0, 5)
     )
 
-    card_panel.bind_selection(select_card)
+    browser.bind_selection(display_llm_info)
 
     try:
-        current_cards = get_cards_by_tags(["ALL"])
-        card_panel.set_cards(current_cards)
-
-        if current_cards:
-            card_panel.listbox.selection_set(0)
-            display_card(current_cards[0])
+        browser.set_cards(get_cards_by_tags(["ALL"]))
     except Exception as error:
         messagebox.showerror(
             "Load Failed",
@@ -414,7 +590,7 @@ def insert_question(
     print(f"Card added with ID {card.id}.")
     return True
 
-def add_card_launch():
+def launch_add_card():
     add_window = tk.Toplevel(root)
     add_window.title("Add Question")
     add_window.geometry("1100x650")
