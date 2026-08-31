@@ -9,7 +9,7 @@ from db_lib import (
     utc_now_iso, record_card_review, update_card_llm_grading_info,
 )
 from sr_models import Card, Deck, ReviewItem, UserCardState
-from llm_grading import grade_answer
+from tkinter_prototype.llm_calls import grade_answer
 
 def build_review_items(cards, states_by_card_id, user_id, now):
     review_items = []

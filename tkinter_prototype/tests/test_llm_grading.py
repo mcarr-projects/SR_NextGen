@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import llm_grading
+import tkinter_prototype.llm_calls as llm_calls
 from sr_models import Card
 
 
@@ -27,7 +27,7 @@ class TestAIGrading(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_build_grading_prompt_contains_generic_prompt_and_payload(self):
-        prompt = llm_grading.build_grading_prompt(DUMMY_CARD, "4.0", self.prompt_path)
+        prompt = llm_calls.build_grading_prompt(DUMMY_CARD, "4.0", self.prompt_path)
         generic_prompt, payload_text = prompt.split("\n\nGRADING PAYLOAD\n", maxsplit=1)
 
         self.assertEqual(generic_prompt, "Return a JSON grade.")
@@ -48,7 +48,7 @@ class TestAIGrading(unittest.TestCase):
             "llm_call_id": 17
         }
 
-        result = llm_grading.grade_answer(
+        result = llm_calls.grade_answer(
             DUMMY_CARD,
             "4.0",
             user_id=3,
@@ -63,7 +63,7 @@ class TestAIGrading(unittest.TestCase):
             "requires_manual_grading": False
         })
         mock_call_gemini.assert_called_once_with(
-            prompt=llm_grading.build_grading_prompt(DUMMY_CARD, "4.0", self.prompt_path),
+            prompt=llm_calls.build_grading_prompt(DUMMY_CARD, "4.0", self.prompt_path),
             purpose="grading",
             user_id=3,
             session_id="test-session",
@@ -78,7 +78,7 @@ class TestAIGrading(unittest.TestCase):
             "llm_call_id": 18
         }
 
-        result = llm_grading.grade_answer(DUMMY_CARD, "4", prompt_path=self.prompt_path)
+        result = llm_calls.grade_answer(DUMMY_CARD, "4", prompt_path=self.prompt_path)
 
         self.assertEqual(result["score"], -1)
         self.assertEqual(result["llm_call_id"], 18)
@@ -92,7 +92,7 @@ class TestAIGrading(unittest.TestCase):
             "llm_call_id": 19
         }
 
-        result = llm_grading.grade_answer(DUMMY_CARD, "Almost 4", prompt_path=self.prompt_path)
+        result = llm_calls.grade_answer(DUMMY_CARD, "Almost 4", prompt_path=self.prompt_path)
 
         self.assertEqual(result["score"], -1)
         self.assertEqual(result["llm_call_id"], 19)
