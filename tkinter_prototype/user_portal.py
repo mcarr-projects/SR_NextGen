@@ -641,6 +641,12 @@ def launch_ai_assisted_question_creation():
     status = tk.StringVar(value="")
     result_queue = Queue()
 
+    def save_draft():
+        if insert_question(*draft_form.get_values()):
+            draft_form.clear()
+            save_button.config(state="disabled")
+            status.set("Question saved.")
+
     def display_draft(result):
         cards = result.get("cards", [])
 
@@ -673,6 +679,8 @@ def launch_ai_assisted_question_creation():
             grading_criteria=draft["grading_criteria"]
         ))
 
+
+        save_button.config(state="normal")
         status.set(
             f"Draft generated. LLM call ID: {result['llm_call_id']}"
         )
@@ -741,6 +749,14 @@ def launch_ai_assisted_question_creation():
         command=generate_draft
     )
     generate_button.pack(side="left", padx=5)
+
+    save_button = tk.Button(
+        controls,
+        text="Save Question",
+        command=save_draft,
+        state="disabled"
+    )
+    save_button.pack(side="left", padx=5)
 
     tk.Label(
         controls,
