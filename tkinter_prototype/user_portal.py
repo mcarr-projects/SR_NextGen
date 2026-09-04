@@ -9,7 +9,7 @@ from db_lib import (
     utc_now_iso, record_card_review, update_card_llm_grading_info,
 )
 from sr_models import Card, Deck, ReviewItem, UserCardState
-from tkinter_prototype.llm_calls import grade_answer
+from llm_calls import generate_card_drafts, grade_answer
 
 def build_review_items(cards, states_by_card_id, user_id, now):
     review_items = []
@@ -420,7 +420,7 @@ def launch_replace_card():
 def launch_manage_cards():
     manage_window = tk.Toplevel(root)
     manage_window.title("Manage Cards")
-    manage_window.geometry("400x300")
+    manage_window.geometry("400x350")
 
     button_frame = tk.Frame(manage_window)
     button_frame.pack(fill="both", expand=True, padx=40, pady=30)
@@ -429,6 +429,12 @@ def launch_manage_cards():
         button_frame,
         text="Add Cards",
         command=launch_add_card
+    ).pack(fill="x", pady=5)
+
+    tk.Button(
+        button_frame,
+        text="AI-Assisted Question Creation",
+        command=launch_ai_assisted_question_creation
     ).pack(fill="x", pady=5)
 
     tk.Button(
@@ -448,7 +454,7 @@ def launch_manage_cards():
         text="Update LLM Grading Info",
         command=launch_update_llm_grading_info
     ).pack(fill="x", pady=5)
-
+    
 def launch_update_llm_grading_info():
     update_window = tk.Toplevel(root)
     update_window.title("Update LLM Grading Info")
@@ -607,6 +613,139 @@ def launch_add_card():
 
     add_button = tk.Button(bottom_frame, text="Add Question", command=add_handler)
     add_button.pack(side="top")
+
+def launch_ai_assisted_question_creation():
+    creation_window = tk.Toplevel(root)
+    creation_window.title("AI-Assisted Question Creation")
+    creation_window.geometry("1100x750")
+
+    prompt_frame, prompt_input = create_text_panel(
+        creation_window,
+        "Describe the Question",
+        100,
+        6
+    )
+    prompt_frame.pack(fill="x", padx=10, pady=(10, 5))
+
+    draft_form = CardForm(creation_window)
+    draft_form.pack(
+        fill="both",
+        expand=True,
+        padx=10,
+        pady=5
+    )
+
+    controls = tk.Frame(creation_window)
+    controls.pack(pady=(5, 10))
+
+    status = tk.StringVar(value="")
+    result_queue = Queue()
+
+    def display_draft(result):
+        cards = result.get("cards", [])
+
+        if not result.get("card_draft_completed"):
+            messagebox.showerror(
+                "Question Creation Failed",
+                result.get(
+                    "error",
+                    "The LLM did not return a valid card draft."
+                ),
+                parent=creation_window
+            )
+            return
+
+        if not cards:
+            messagebox.showerror(
+                "Question Creation Failed",
+                "The LLM reported success but returned no card draft.",
+                parent=creation_window
+            )
+            return
+
+        draft = cards[0]
+
+        draft_form.load_card(Card(
+            question=draft["question"],
+            answer=draft["answer"],
+            tags=draft["tags"],
+            grading_type=draft["grading_type"],
+            grading_criteria=draft["grading_criteria"]
+        ))
+
+        status.set(
+            f"Draft generated. LLM call ID: {result['llm_call_id']}"
+        )
+
+    def poll_for_draft():
+        try:
+            queue_status, result = result_queue.get_nowait()
+        except Empty:
+            creation_window.after(100, poll_for_draft)
+            return
+
+        generate_button.config(
+            text="Generate Draft",
+            state="normal"
+        )
+
+        if queue_status == "error":
+            messagebox.showerror(
+                "Question Creation Failed",
+                str(result),
+                parent=creation_window
+            )
+            return
+
+        display_draft(result)
+
+    def generate_draft():
+        question_input = (
+            prompt_input.get("1.0", "end-1c").strip()
+        )
+
+        if not question_input:
+            messagebox.showerror(
+                "Missing Question",
+                "Enter the question or question idea to generate.",
+                parent=creation_window
+            )
+            return
+
+        generate_button.config(
+            text="Generating...",
+            state="disabled"
+        )
+        status.set("")
+
+        def run_generator():
+            try:
+                result = generate_card_drafts(
+                    question_input,
+                    1
+                )
+                result_queue.put(("success", result))
+            except Exception as error:
+                result_queue.put(("error", error))
+
+        threading.Thread(
+            target=run_generator,
+            daemon=True
+        ).start()
+
+        creation_window.after(100, poll_for_draft)
+
+    generate_button = tk.Button(
+        controls,
+        text="Generate Draft",
+        command=generate_draft
+    )
+    generate_button.pack(side="left", padx=5)
+
+    tk.Label(
+        controls,
+        textvariable=status
+    ).pack(side="left", padx=5)
 
 def ai_card_review(to_review):
     if not to_review:
