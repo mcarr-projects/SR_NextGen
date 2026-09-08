@@ -1,30 +1,53 @@
-# Git ignore rules
+# === Local environment and secrets ===
 
-# Other
-Research/
-migration_export.json
-tempCodeRunnerFile.py
-
-# === Environment files ===
+.venv/
 .env
-.env.*       # in case you have .env.local or .env.dev
+.env.*
+!.env.example
+
 
 # === Python cache and build artifacts ===
+
 __pycache__/
 *.py[cod]
 *.egg
 *.egg-info/
-dist/
 build/
+dist/
+
+
+# === Test and coverage artifacts ===
+
+.pytest_cache/
+.coverage
+htmlcov/
+
 
 # === SQLite databases ===
+
 *.db
 *.sqlite3
 *.db.backup*
+*.sqlite3-journal
 
 
-# === Backup files ===
+# === Django-generated files ===
+
+staticfiles/
+media/
+
+
+# === Project-specific files ===
+
+Research/
+migration_export.json
+tempCodeRunnerFile.py
+tkinter_prototype.zip
+
+
+# === Temporary and backup files ===
+
 *.bak
 *.tmp
 *.swp
-tkinter_prototype.zip
+*.log
