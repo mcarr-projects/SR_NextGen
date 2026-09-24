@@ -3,8 +3,16 @@ from pathlib import Path
 
 from db_lib import DEFAULT_USER_ID
 from gemini_calls import call_gemini
+from oai_calls import call_oai
 from sr_models import Card
 
+
+DEFAULT_PROVIDER = "oai"
+
+PROVIDER_CALLS = {
+    "oai": call_oai,
+    "google": call_gemini
+}
 GRADING_PROMPT_PATH = Path(__file__).resolve().parent.parent.parent / "SR_Private" / "Prompts" / "grading_prompt.txt"
 MAX_FEEDBACK = 2000
 CARD_DRAFT_PROMPT_PATH = (
@@ -13,7 +21,11 @@ CARD_DRAFT_PROMPT_PATH = (
     / "Prompts"
     / "card_draft_prompt.txt"
 )
-
+def _get_provider_call(provider: str):
+    try:
+        return PROVIDER_CALLS[provider]
+    except KeyError:
+        raise ValueError(f"Unsupported LLM provider: {provider}") from None
 
 def build_grading_payload(card: Card, user_answer: str) -> dict:
     if not isinstance(card, Card):
@@ -75,15 +87,16 @@ def grade_answer(
     user_id: int | None = DEFAULT_USER_ID,
     session_id: str | None = None,
     client=None,
-    prompt_path: Path = GRADING_PROMPT_PATH
+    prompt_path: Path = GRADING_PROMPT_PATH,
+    provider: str = DEFAULT_PROVIDER,
 ) -> dict:
     prompt = build_grading_prompt(card, user_answer, prompt_path)
-    call_result = call_gemini(
+    call_result = _get_provider_call(provider)(
         prompt=prompt,
         purpose="grading",
         user_id=user_id,
         session_id=session_id,
-        client=client
+        client=client,
     )
 
     if call_result["status"] == "failed":
@@ -219,20 +232,21 @@ def generate_card_drafts(
     user_id: int | None = DEFAULT_USER_ID,
     session_id: str | None = None,
     client=None,
-    prompt_path: Path = CARD_DRAFT_PROMPT_PATH
+    prompt_path: Path = CARD_DRAFT_PROMPT_PATH,
+    provider: str = DEFAULT_PROVIDER
 ) -> dict:
     prompt = build_card_draft_prompt(
         question_input,
         question_count,
         prompt_path
     )
-    call_result = call_gemini(
-        prompt=prompt,
-        purpose="card_draft",
-        user_id=user_id,
-        session_id=session_id,
-        client=client
-    )
+    call_result = _get_provider_call(provider)(
+    prompt=prompt,
+    purpose="card_draft",
+    user_id=user_id,
+    session_id=session_id,
+    client=client
+        )
 
     if call_result["status"] == "failed":
         return _card_draft_failure_result(
