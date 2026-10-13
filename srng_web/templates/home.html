@@ -1,0 +1,14 @@
+<h1>SRNextGen</h1>
+
+{% if user.is_authenticated %}
+<p>Logged in as {{ user.email }}</p>
+<form action="{% url 'logout' %}" method="post">
+    {% csrf_token %}
+    <button type="submit">Log Out</button>
+</form>
+
+
+{% else %}
+<p><a href="{% url 'login' %}">Log In</a></p>
+<p><a href="{% url 'signup' %}">Sign Up</a></p>
+{% endif %}
