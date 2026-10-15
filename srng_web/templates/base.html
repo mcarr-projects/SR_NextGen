@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}SR NextGen{% endblock %}</title>
+</head>
+
+<body>
+    <header>
+        <nav>
+            <p><a href="{% url 'home' %}">Home</a></p>
+            <p><a href="{% url 'study_content:add_card' %}">Add Card</a></p>
+            <a href="{% url 'study_content:card_browse' %}">View Cards</a>
+        </nav>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+
+</html>

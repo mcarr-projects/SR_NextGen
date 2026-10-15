@@ -1,8 +1,20 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.conf import settings
 # Create your models here.
 
+class Tag(models.Model):
+    name = models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.name
+
 class Card(models.Model):
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='authored_cards',
+    )
     class Length(models.TextChoices):
         SHORT = "short", "Short"
         MEDIUM = "medium", "Medium"
@@ -28,6 +40,12 @@ class Card(models.Model):
     is_deprecated = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    tags = models.ManyToManyField(
+        Tag,
+        related_name='cards',
+        blank=True,
+    )
 
     class Meta:
         constraints = [
@@ -72,3 +90,4 @@ class Card(models.Model):
 
     def __str__(self):
         return self.question
+

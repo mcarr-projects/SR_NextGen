@@ -1,0 +1,236 @@
+{% extends 'base.html' %}
+
+{% block title %}Browse Cards{% endblock %}
+
+{% block content %}
+<style>
+    .card-browser {
+        display: grid;
+        grid-template-columns: 1fr 2fr 2fr;
+        gap: 1rem;
+        margin-top: 1rem;
+    }
+
+    .card-browser>section {
+        min-width: 0;
+        padding: 1rem;
+        border: 1px solid #ccc;
+    }
+
+    .card-browser h2 {
+        margin-top: 0;
+    }
+
+    .tag-input {
+        box-sizing: border-box;
+        width: 100%;
+        margin-bottom: .5rem;
+    }
+
+    .selected-tags,
+    .question-list {
+        list-style: none;
+        padding: 0;
+    }
+
+    .selected-tags li {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: .5rem;
+        margin-bottom: .5rem;
+        overflow-wrap: anywhere;
+    }
+
+    .question-list {
+        max-height: 70vh;
+        overflow-y: auto;
+    }
+
+    .question-choice {
+        display: block;
+        width: 100%;
+        padding: .75rem;
+        border: 0;
+        border-bottom: 1px solid #ccc;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .question-choice:hover,
+    .question-choice[aria-pressed="true"] {
+        background: #e8eef8;
+    }
+
+    #selected-question {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+
+    @media (max-width: 750px) {
+        .card-browser {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<h1>Browse Cards</h1>
+
+<div class="card-browser">
+    <section aria-labelledby="tags-heading">
+        <h2 id="tags-heading">Tags</h2>
+
+        <p>
+            <a href="{% url 'study_content:card_browse' %}">View All</a>
+        </p>
+
+        <form method="get" id="tag-form" action="{% url 'study_content:card_browse' %}">
+            {% for name in selected_tags %}
+            <input type="hidden" name="tag" value="{{ name }}">
+            {% endfor %}
+
+            <label for="tag-input">Find a tag</label>
+            <input class="tag-input" id="tag-input" name="tag" list="tag-options" autocomplete="off" required>
+
+            <datalist id="tag-options">
+                {% for tag in tags %}
+                <option value="{{ tag.name }}"></option>
+                {% endfor %}
+            </datalist>
+
+            <button type="submit">Add Tag</button>
+        </form>
+
+        <p>Cards must contain all selected tags.</p>
+
+        <ul class="selected-tags">
+            {% for name in selected_tags %}
+            <li>
+                <span>{{ name }}</span>
+                <button type="button" data-remove-tag="{{ name }}" aria-label="Remove tag: {{ name }}">
+                    ×
+                </button>
+            </li>
+            {% empty %}
+            <li>No tags selected.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section aria-labelledby="questions-heading">
+        <h2 id="questions-heading">Questions</h2>
+
+        <ul class="question-list">
+            {% for card in cards %}
+            <li>
+                <button type="button" class="question-choice" aria-pressed="false">
+                    {{ card.question }}
+                </button>
+                <template>
+                    <h3>Question</h3>
+                    <div class="card-text">{{ card.question }}</div>
+
+                    <h3>Answer</h3>
+                    <div class="card-text">{{ card.answer }}</div>
+
+                    <h3>Length</h3>
+                    <p>{{ card.get_length_display }}</p>
+
+                    <h3>Grading Type</h3>
+                    <p>{{ card.get_grading_type_display|default:'Not specified' }}</p>
+
+                    <h3>Grading Criteria</h3>
+                    <div class="card-text">{{ card.grading_criteria|default:'Not specified' }}</div>
+
+                    <h3>LLM Grading Info</h3>
+                    <div class="card-text">{{ card.llm_grading_info|default:'Not specified' }}</div>
+
+                    <h3>Tags</h3>
+                    <p>
+                        {% for tag in card.tags.all %}
+                        {{ tag.name }}{% if not forloop.last %}, {% endif %}
+                        {% empty %}
+                        No tags
+                        {% endfor %}
+                    </p>
+
+                    <h3>Details</h3>
+                    <p>ID: {{ card.pk }}</p>
+                    <p>Author: {{ card.author }}</p>
+                    <p>Deprecated: {{ card.is_deprecated|yesno:'Yes,No' }}</p>
+                    <p>Created: {{ card.created_at }}</p>
+                    <p>Updated: {{ card.updated_at }}</p>
+                </template>
+            </li>
+            {% empty %}
+            <li>No matching cards.</li>
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section aria-labelledby="selected-heading">
+        <h2 id="selected-heading">Selected Question</h2>
+        <div id="selected-question" aria-live="polite">Select a question from the list.</div>
+    </section>
+</div>
+
+<script>
+    const tagForm = document.getElementById('tag-form');
+    const tagInput = document.getElementById('tag-input');
+    const availableTags = new Set(
+        Array.from(document.querySelectorAll('#tag-options option'),
+            option => option.value)
+    );
+
+    tagInput.addEventListener('input', () => {
+        tagInput.setCustomValidity('');
+    });
+
+    tagForm.addEventListener('submit', event => {
+        const selectedTags = new FormData(tagForm).getAll('tag');
+        const name = tagInput.value;
+
+        if (!availableTags.has(name)) {
+            event.preventDefault();
+            tagInput.setCustomValidity('Select an existing tag.');
+            tagInput.reportValidity();
+        } else if (selectedTags.slice(0, -1).includes(name)) {
+            event.preventDefault();
+            tagInput.setCustomValidity('That tag is already selected.');
+            tagInput.reportValidity();
+        }
+    });
+
+    document.querySelectorAll('[data-remove-tag]').forEach(button => {
+        button.addEventListener('click', () => {
+            const url = new URL(window.location.href);
+            const remaining = url.searchParams.getAll('tag').filter(
+                name => name !== button.dataset.removeTag
+            );
+
+            url.searchParams.delete('tag');
+            remaining.forEach(name => url.searchParams.append('tag', name));
+            window.location.assign(url);
+        });
+    });
+
+    const questionButtons = document.querySelectorAll('.question-choice');
+    const questionPanel = document.getElementById('selected-question');
+
+    questionButtons.forEach(button => {
+        button.addEventListener('click', () => {
+            questionButtons.forEach(other => {
+                other.setAttribute('aria-pressed', 'false');
+            });
+
+            button.setAttribute('aria-pressed', 'true');
+            questionPanel.textContent =
+                button.nextElementSibling.content.textContent;
+        });
+    });
+</script>
+{% endblock %}

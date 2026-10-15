@@ -1,3 +1,6 @@
+{% extends 'base.html' %}
+
+{% block content %}
 <h1>SRNextGen</h1>
 
 {% if user.is_authenticated %}
@@ -12,3 +15,5 @@
 <p><a href="{% url 'login' %}">Log In</a></p>
 <p><a href="{% url 'signup' %}">Sign Up</a></p>
 {% endif %}
+
+{% endblock content %}
