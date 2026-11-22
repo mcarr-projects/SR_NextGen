@@ -33,3 +33,53 @@ jobs:
           if [ -f srng_web/manage.py ]; then cd srng_web; fi
           python -m pip install -r requirements-ci.txt
           python manage.py test
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: srng-production
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+    env:
+      INSTANCE_ID: i-04d8314a293bfc960
+    steps:
+      - name: Assume the SRNG deployment role
+        uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Deploy the tested commit and wait for EC2
+        shell: bash
+        run: |
+          set -euo pipefail
+          command_id=$(aws ssm send-command \
+            --document-name SRNG-Deploy \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters "CommitSha=$GITHUB_SHA" \
+            --timeout-seconds 120 \
+            --query Command.CommandId --output text)
+          echo "SSM command $command_id for $GITHUB_SHA"
+          deadline=$((SECONDS + 780))
+          while (( SECONDS < deadline )); do
+            if result=$(aws ssm get-command-invocation \
+                --command-id "$command_id" --instance-id "$INSTANCE_ID" \
+                --output json 2>ssm-error.txt); then
+              status=$(jq -r '.Status' <<<"$result")
+              case "$status" in
+                Pending|InProgress|Delayed) ;;
+                Success) jq -r '.StandardOutputContent' <<<"$result"; exit 0 ;;
+                *) jq -r '.StatusDetails, .StandardErrorContent, .StandardOutputContent' <<<"$result"; exit 1 ;;
+              esac
+            elif ! grep -q 'InvocationDoesNotExist' ssm-error.txt; then
+              cat ssm-error.txt >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "Timed out waiting for SSM command $command_id" >&2
+          exit 1
